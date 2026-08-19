@@ -1,7 +1,7 @@
 import { useState } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile, readDir } from "@tauri-apps/plugin-fs";
+import { readTextFile, readDir, writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import "./App.css";
 
@@ -161,7 +161,6 @@ function App() {
 
   async function saveRow(row: EditorRow) {
     const newText = drafts[row.key] ?? "";
-    // Don't save if nothing actually changed from what's already stored
     if (newText === (row.translated_text ?? "")) return;
 
     const db = await Database.load("sqlite:pdx-afrikaans.db");
@@ -178,12 +177,98 @@ function App() {
       [row.key, row.game_id, row.translated_text ?? "", newText, "You (local)"]
     );
 
-    // Reflect the save immediately in the visible list (updates the color)
     setRows((prev) =>
       prev.map((r) =>
         r.key === row.key ? { ...r, translated_text: newText, status: "human-confirmed" } : r
       )
     );
+  }
+
+  // --- Mod export ---
+
+  function toModRelativePath(fullPath: string): string | null {
+    const marker = "\\game\\";
+    const idx = fullPath.indexOf(marker);
+    if (idx === -1) return null;
+
+    const afterGame = fullPath.substring(idx + marker.length);
+    const parts = afterGame.split("\\");
+    const fileName = parts.pop();
+
+    return [...parts, "replace", fileName].join("\\");
+  }
+
+  async function exportMod() {
+    setStatus("Choose a folder to export the mod into...");
+    const destFolder = await open({ directory: true, multiple: false });
+    if (!destFolder) {
+      setStatus("Export cancelled.");
+      return;
+    }
+
+    const modName = "afrikaans-translation";
+    const modRoot = await join(destFolder as string, modName);
+
+    setStatus("Gathering translated strings...");
+    const db = await Database.load("sqlite:pdx-afrikaans.db");
+
+    const translated = (await db.select(`
+      SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
+      FROM strings s
+      JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
+      WHERE t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
+    `)) as { key: string; file_path: string; translated_text: string }[];
+
+    if (translated.length === 0) {
+      setStatus("No confirmed translations to export yet.");
+      return;
+    }
+
+    const byFile: Record<string, { key: string; translated_text: string }[]> = {};
+    for (const row of translated) {
+      const relPath = toModRelativePath(row.file_path);
+      if (!relPath) continue;
+      if (!byFile[relPath]) byFile[relPath] = [];
+      byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
+    }
+
+    setStatus(`Writing ${Object.keys(byFile).length} localization files...`);
+
+    for (const [relPath, entries] of Object.entries(byFile)) {
+      const fullOutputPath = await join(modRoot, relPath);
+      const folderPath = fullOutputPath.substring(0, fullOutputPath.lastIndexOf("\\"));
+
+      await mkdir(folderPath, { recursive: true });
+
+      let fileContent = "l_english:\n";
+      for (const entry of entries) {
+        const safeText = entry.translated_text.replace(/"/g, '\\"');
+        fileContent += ` ${entry.key}: "${safeText}"\n`;
+      }
+
+      await writeTextFile(fullOutputPath, fileContent);
+    }
+
+    await mkdir(await join(modRoot, ".metadata"), { recursive: true });
+    await writeTextFile(
+      await join(modRoot, ".metadata", "metadata.json"),
+      JSON.stringify(
+        {
+          name: "Afrikaans Translation",
+          id: "afrikaans-translation",
+          version: "0.1.0",
+          supported_game_version: "*",
+        },
+        null,
+        2
+      )
+    );
+    await writeTextFile(
+      await join(modRoot, "descriptor.mod"),
+      `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="Afrikaans Translation"\n`
+    );
+
+    setStatus(`Export complete. Wrote ${translated.length} strings across ${Object.keys(byFile).length} files to ${modRoot}`);
   }
 
   return (
@@ -193,6 +278,7 @@ function App() {
       <button onClick={importFolder}>Import Entire Folder</button>{" "}
       <button onClick={() => loadBatch(0)}>Open Editor</button>{" "}
       <button onClick={loadNextUntranslated}>Next Untranslated Batch</button>{" "}
+      <button onClick={exportMod}>Export Mod</button>{" "}
       {rows.length > 0 && (
         <>
           <button onClick={() => loadBatch(Math.max(0, offset - BATCH_SIZE))} disabled={offset === 0}>
