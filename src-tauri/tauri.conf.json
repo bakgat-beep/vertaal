@@ -12,9 +12,10 @@
   "app": {
     "windows": [
       {
-        "title": "pdx-afrikaans",
+        "title": "Vertaal",
         "width": 1400,
-        "height": 900
+        "height": 900,
+        "theme": "Dark"
       }
     ],
     "security": {

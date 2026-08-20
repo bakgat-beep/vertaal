@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Database from "@tauri-apps/plugin-sql";
 import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile, readDir, writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
+import { readTextFile, readDir, writeTextFile, mkdir, writeFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import "./App.css";
 
@@ -18,6 +18,8 @@ interface EditorRow {
   translated_text: string | null;
   status: string | null;
 }
+
+type ViewMode = "all" | "untranslated" | "translated" | "search";
 
 function parseLocFile(content: string): ParsedString[] {
   const results: ParsedString[] = [];
@@ -45,6 +47,19 @@ function App() {
   const [rows, setRows] = useState<EditorRow[]>([]);
   const [offset, setOffset] = useState(0);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [viewMode, setViewMode] = useState<ViewMode>("all");
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const [statusCounts, setStatusCounts] = useState({
+    untranslated: 0,
+    aiDraft: 0,
+    confirmed: 0,
+    total: 0,
+  });
+
+  useEffect(() => {
+    refreshCounts();
+  }, []);
 
   async function findLocFiles(dirPath: string): Promise<string[]> {
     const entries = await readDir(dirPath);
@@ -100,59 +115,70 @@ function App() {
     setStatus(`Import complete. Processed ${files.length} files, ${totalStrings} strings this run.`);
   }
 
-  // --- Editor view ---
+  // --- Unified page loader: respects whichever view is currently active ---
 
-  async function loadBatch(newOffset: number) {
-    setStatus("Loading batch...");
+  async function loadPage(mode: ViewMode, newOffset: number) {
+    setStatus("Loading...");
     const db = await Database.load("sqlite:pdx-afrikaans.db");
 
-    const batch = (await db.select(
-      `SELECT s.key as key, s.game_id as game_id, s.source_text as source_text,
-              s.context_label as context_label, t.translated_text as translated_text,
-              t.status as status
-       FROM strings s
-       LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-       ORDER BY s.file_path, s.key
-       LIMIT $1 OFFSET $2`,
-      [BATCH_SIZE, newOffset]
-    )) as EditorRow[];
+    const baseSelect = `
+      SELECT s.key as key, s.game_id as game_id, s.source_text as source_text,
+             s.context_label as context_label, t.translated_text as translated_text,
+             t.status as status
+      FROM strings s
+      LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
+    `;
+
+    let batch: EditorRow[] = [];
+
+    if (mode === "all") {
+      batch = (await db.select(
+        `${baseSelect} ORDER BY s.file_path, s.key LIMIT $1 OFFSET $2`,
+        [BATCH_SIZE, newOffset]
+      )) as EditorRow[];
+    } else if (mode === "untranslated") {
+      batch = (await db.select(
+        `${baseSelect} WHERE t.status IS NULL OR t.status = 'untranslated'
+         ORDER BY s.file_path, s.key LIMIT $1 OFFSET $2`,
+        [BATCH_SIZE, newOffset]
+      )) as EditorRow[];
+    } else if (mode === "translated") {
+      batch = (await db.select(
+        `${baseSelect} WHERE t.status = 'human-confirmed'
+         ORDER BY t.updated_at DESC LIMIT $1 OFFSET $2`,
+        [BATCH_SIZE, newOffset]
+      )) as EditorRow[];
+    } else if (mode === "search") {
+      const likeTerm = `%${searchTerm}%`;
+      batch = (await db.select(
+        `${baseSelect} WHERE s.key LIKE $1 OR s.source_text LIKE $2 OR t.translated_text LIKE $3
+         LIMIT $4 OFFSET $5`,
+        [likeTerm, likeTerm, likeTerm, BATCH_SIZE, newOffset]
+      )) as EditorRow[];
+    }
 
     setRows(batch);
     setOffset(newOffset);
-
-    const initialDrafts: Record<string, string> = {};
-    for (const row of batch) {
-      initialDrafts[row.key] = row.translated_text ?? "";
-    }
-    setDrafts(initialDrafts);
-
-    setStatus(`Showing rows ${newOffset + 1}–${newOffset + batch.length}.`);
-  }
-
-  async function loadNextUntranslated() {
-    setStatus("Finding next untranslated strings...");
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
-
-    const batch = (await db.select(
-      `SELECT s.key as key, s.game_id as game_id, s.source_text as source_text,
-              s.context_label as context_label, t.translated_text as translated_text,
-              t.status as status
-       FROM strings s
-       LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-       WHERE t.status IS NULL OR t.status = 'untranslated'
-       ORDER BY s.file_path, s.key
-       LIMIT $1`,
-      [BATCH_SIZE]
-    )) as EditorRow[];
-
-    setRows(batch);
-    setOffset(0);
+    setViewMode(mode);
 
     const initialDrafts: Record<string, string> = {};
     for (const row of batch) initialDrafts[row.key] = row.translated_text ?? "";
     setDrafts(initialDrafts);
 
-    setStatus(`Loaded ${batch.length} untranslated strings.`);
+    setStatus(`Showing ${batch.length} result(s) — view: ${mode}, offset ${newOffset}.`);
+  }
+
+  function toggleTranslatedView() {
+    if (viewMode === "translated") {
+      loadPage("all", 0);
+    } else {
+      loadPage("translated", 0);
+    }
+  }
+
+  function runSearch() {
+    if (!searchTerm.trim()) return;
+    loadPage("search", 0);
   }
 
   function updateDraft(key: string, value: string) {
@@ -196,6 +222,15 @@ function App() {
     const fileName = parts.pop();
 
     return [...parts, "replace", fileName].join("\\");
+  }
+
+  async function writeTextFileWithBom(path: string, content: string) {
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+    const textBytes = new TextEncoder().encode(content);
+    const combined = new Uint8Array(bom.length + textBytes.length);
+    combined.set(bom, 0);
+    combined.set(textBytes, bom.length);
+    await writeFile(path, combined);
   }
 
   async function exportMod() {
@@ -246,7 +281,7 @@ function App() {
         fileContent += ` ${entry.key}: "${safeText}"\n`;
       }
 
-      await writeTextFile(fullOutputPath, fileContent);
+        await writeTextFileWithBom(fullOutputPath, fileContent);
     }
 
     await mkdir(await join(modRoot, ".metadata"), { recursive: true });
@@ -257,12 +292,24 @@ function App() {
           name: "Afrikaans Translation",
           id: "afrikaans-translation",
           version: "0.1.0",
-          supported_game_version: "*",
+          game_id: "eu5",
+          supported_game_version: "1.3.*",
+          short_description: "Afrikaans translation of Europa Universalis V.",
+          tags: ["Translation"],
+          relationships: [],
+          game_custom_data: {},
         },
         null,
         2
       )
     );
+
+    
+    const placeholderPngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    const pngBytes = Uint8Array.from(atob(placeholderPngBase64), (c) => c.charCodeAt(0));
+    await writeFile(await join(modRoot, ".metadata", "thumbnail.png"), pngBytes);
+
     await writeTextFile(
       await join(modRoot, "descriptor.mod"),
       `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="Afrikaans Translation"\n`
@@ -271,62 +318,136 @@ function App() {
     setStatus(`Export complete. Wrote ${translated.length} strings across ${Object.keys(byFile).length} files to ${modRoot}`);
   }
 
-  return (
-    <main className="container" style={{ maxWidth: "100%", padding: "1rem" }}>
-      <h1>PDX Afrikaans</h1>
+  async function refreshCounts() {
+    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    const result = (await db.select(`
+      SELECT
+        (SELECT COUNT(*) FROM strings) as total,
+        (SELECT COUNT(*) FROM translations WHERE status = 'human-confirmed') as confirmed,
+        (SELECT COUNT(*) FROM translations WHERE status = 'ai-suggested') as ai_draft
+    `)) as { total: number; confirmed: number; ai_draft: number }[];
 
-      <button onClick={importFolder}>Import Entire Folder</button>{" "}
-      <button onClick={() => loadBatch(0)}>Open Editor</button>{" "}
-      <button onClick={loadNextUntranslated}>Next Untranslated Batch</button>{" "}
-      <button onClick={exportMod}>Export Mod</button>{" "}
-      {rows.length > 0 && (
-        <>
-          <button onClick={() => loadBatch(Math.max(0, offset - BATCH_SIZE))} disabled={offset === 0}>
-            ← Previous 100
-          </button>{" "}
-          <button onClick={() => loadBatch(offset + BATCH_SIZE)}>Next 100 →</button>
-        </>
-      )}
+    const r = result[0];
+    setStatusCounts({
+      total: r.total,
+      confirmed: r.confirmed,
+      aiDraft: r.ai_draft,
+      untranslated: r.total - r.confirmed - r.ai_draft,
+    });
+  }
 
-      <p>{status}</p>
-      {count !== null && <p>Total strings in database: {count}</p>}
+    return (
+    <div className="app-shell">
+      <div className="title-bar">
+        <div className="logo-mark" />
+        <span className="app-name">Vertaal</span>
+        <span className="project-context">— EU5 → Afrikaans</span>
+        <div className="title-bar-spacer" />
+        <button className="build-mod-button" onClick={exportMod}>
+          Build Mod
+        </button>
+      </div>
 
-      {rows.length > 0 && (
-        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "1rem" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "2px solid #999" }}>
-              <th style={{ width: "10%" }}>Key / Context</th>
-              <th style={{ width: "40%" }}>English</th>
-              <th style={{ width: "50%" }}>Afrikaans</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const bgColor = STATUS_COLORS[row.status ?? "untranslated"] ?? STATUS_COLORS.untranslated;
-              return (
-                <tr key={row.key} style={{ background: bgColor, borderLeft: "4px solid #999" }}>
-                  <td style={{ verticalAlign: "top", padding: "0.4rem", fontSize: "0.8rem" }}>
-                    <strong>{row.key}</strong>
-                    <br />
-                    <em>{row.context_label}</em>
-                  </td>
-                  <td style={{ verticalAlign: "top", padding: "0.4rem" }}>{row.source_text}</td>
-                  <td style={{ padding: "0.4rem" }}>
-                    <textarea
-                      value={drafts[row.key] ?? ""}
-                      onChange={(e) => updateDraft(row.key, e.target.value)}
-                      onBlur={() => saveRow(row)}
-                      rows={6}
-                      style={{ width: "100%" }}
-                    />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-    </main>
+      <div className="main-content">
+        <button onClick={importFolder}>Import Entire Folder</button>{" "}
+        <button onClick={() => loadPage("all", 0)}>Open Editor</button>{" "}
+        <button onClick={() => loadPage("untranslated", 0)}>Next Untranslated Batch</button>{" "}
+        <button onClick={toggleTranslatedView}>
+          {viewMode === "translated" ? "← Back to Editor" : "Review My Translations"}
+        </button>
+
+        <br /><br />
+
+        <input
+          type="text"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          placeholder="Search by key, English, or Afrikaans text..."
+          style={{ width: "300px" }}
+        />{" "}
+        <button onClick={runSearch}>Search</button>
+
+        <p style={{ color: "var(--text-dim)" }}>{status}</p>
+        {count !== null && <p style={{ color: "var(--text-dim)" }}>Total strings in database: {count}</p>}
+
+        {rows.length > 0 && (
+          <div style={{ margin: "0.5rem 0" }}>
+            <button onClick={() => loadPage(viewMode, Math.max(0, offset - BATCH_SIZE))} disabled={offset === 0}>
+              ← Previous 100
+            </button>{" "}
+            <button onClick={() => loadPage(viewMode, offset + BATCH_SIZE)}>Next 100 →</button>
+          </div>
+        )}
+
+        {rows.length > 0 && (
+          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "1rem" }}>
+            <thead>
+              <tr style={{ textAlign: "left", borderBottom: "2px solid var(--border)" }}>
+                <th style={{ width: "10%" }}>Key / Context</th>
+                <th style={{ width: "40%" }}>English</th>
+                <th style={{ width: "50%" }}>Afrikaans</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const bgColor =
+                  row.status === "human-confirmed"
+                    ? "rgba(76,175,125,0.15)"
+                    : row.status === "ai-suggested"
+                    ? "rgba(217,164,65,0.15)"
+                    : "rgba(90,95,104,0.15)";
+                const barColor =
+                  row.status === "human-confirmed"
+                    ? "var(--status-confirmed)"
+                    : row.status === "ai-suggested"
+                    ? "var(--status-ai-draft)"
+                    : "var(--status-untranslated)";
+                return (
+                  <tr key={row.key} style={{ background: bgColor, borderLeft: `4px solid ${barColor}` }}>
+                    <td style={{ verticalAlign: "top", padding: "0.4rem", fontSize: "0.8rem" }}>
+                      <strong>{row.key}</strong>
+                      <br />
+                      <em style={{ color: "var(--text-dim)" }}>{row.context_label}</em>
+                    </td>
+                    <td style={{ verticalAlign: "top", padding: "0.4rem", color: "var(--text-dim)" }}>
+                      {row.source_text}
+                    </td>
+                    <td style={{ padding: "0.4rem" }}>
+                      <textarea
+                        value={drafts[row.key] ?? ""}
+                        onChange={(e) => updateDraft(row.key, e.target.value)}
+                        onBlur={() => {
+                          saveRow(row);
+                          refreshCounts();
+                        }}
+                        rows={6}
+                        style={{ width: "100%" }}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="status-bar">
+        <span>
+          <span className="status-dot" style={{ background: "var(--status-untranslated)" }} />
+          {statusCounts.untranslated.toLocaleString()} untranslated
+        </span>
+        <span>
+          <span className="status-dot" style={{ background: "var(--status-ai-draft)" }} />
+          {statusCounts.aiDraft.toLocaleString()} AI draft
+        </span>
+        <span>
+          <span className="status-dot" style={{ background: "var(--status-confirmed)" }} />
+          {statusCounts.confirmed.toLocaleString()} confirmed
+        </span>
+        <span>{statusCounts.total.toLocaleString()} total strings</span>
+      </div>
+    </div>
   );
 }
 
