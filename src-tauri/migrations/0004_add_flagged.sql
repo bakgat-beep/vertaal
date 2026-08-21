@@ -1,0 +1,1 @@
+ALTER TABLE translations ADD COLUMN flagged INTEGER DEFAULT 0;

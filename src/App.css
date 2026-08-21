@@ -244,3 +244,50 @@ table {
   cursor: pointer;
   padding: 0.2rem 0.4rem;
 }
+
+.row-key {
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.75rem;
+}
+
+.row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.action-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  color: var(--text-dim);
+  padding: 0;
+}
+
+.action-btn.confirm:hover {
+  border-color: var(--status-confirmed);
+  color: var(--status-confirmed);
+}
+
+.action-btn.flag:hover {
+  border-color: #e05a5a;
+  color: #e05a5a;
+}
+
+.action-btn.flagged {
+  border-color: #e05a5a;
+  color: #e05a5a;
+}
+
+.row-selected {
+  background: var(--bg-selected) !important;
+}
+
+textarea::placeholder {
+  font-style: italic;
+  color: var(--text-dim);
+}

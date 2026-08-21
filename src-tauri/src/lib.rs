@@ -25,6 +25,18 @@ pub fn run() {
             sql: include_str!("../migrations/0003_add_subcategory.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
+        tauri_plugin_sql::Migration {
+            version: 4,
+            description: "add_flagged_column",
+            sql: include_str!("../migrations/0004_add_flagged.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+                tauri_plugin_sql::Migration {
+            version: 5,
+            description: "dedupe_translations_and_add_unique_constraint",
+            sql: include_str!("../migrations/0005_dedupe_translations.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

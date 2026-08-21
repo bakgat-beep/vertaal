@@ -17,6 +17,10 @@ interface EditorRow {
   context_label: string | null;
   translated_text: string | null;
   status: string | null;
+  flagged: number | null;
+  translated_by: string | null;
+  updated_at: string | null;
+  file_path?: string | null;
 }
 
 type ViewMode = "all" | "untranslated" | "translated" | "search" | "category" | "subcategory";
@@ -62,6 +66,8 @@ function App() {
 
   const [categories, setCategories] = useState<CategoryCount[]>([]);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+
+  const [selectedRow, setSelectedRow] = useState<EditorRow | null>(null);
 
   const [statusCounts, setStatusCounts] = useState({
     untranslated: 0,
@@ -137,8 +143,9 @@ function App() {
 
     const baseSelect = `
       SELECT s.key as key, s.game_id as game_id, s.source_text as source_text,
-             s.context_label as context_label, t.translated_text as translated_text,
-             t.status as status
+             s.context_label as context_label, s.file_path as file_path,
+             t.translated_text as translated_text, t.status as status,
+             t.flagged as flagged, t.translated_by as translated_by, t.updated_at as updated_at
       FROM strings s
       LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
     `;
@@ -223,16 +230,20 @@ function App() {
     loadPage("subcategory", 0, category, subcategory);
   }
 
-  async function saveRow(row: EditorRow) {
+    async function saveDraft(row: EditorRow) {
     const newText = drafts[row.key] ?? "";
     if (newText === (row.translated_text ?? "")) return;
+
+    // Don't downgrade an already-confirmed row just because it was clicked into
+    // without actually being changed further, or re-typed with the same text.
+    const newStatus = newText.trim() === "" ? "untranslated" : "human-draft";
 
     const db = await Database.load("sqlite:pdx-afrikaans.db");
 
     await db.execute(
-      `INSERT OR REPLACE INTO translations (string_key, game_id, translated_text, status, translated_by, updated_at)
-       VALUES ($1, $2, $3, 'human-confirmed', $4, datetime('now'))`,
-      [row.key, row.game_id, newText, "You (local)"]
+      `INSERT OR REPLACE INTO translations (string_key, game_id, translated_text, status, translated_by, updated_at, flagged)
+       VALUES ($1, $2, $3, $4, $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7), 0))`,
+      [row.key, row.game_id, newText, newStatus, "You (local)", row.key, row.game_id]
     );
 
     await db.execute(
@@ -241,11 +252,35 @@ function App() {
       [row.key, row.game_id, row.translated_text ?? "", newText, "You (local)"]
     );
 
-    setRows((prev) =>
-      prev.map((r) =>
-        r.key === row.key ? { ...r, translated_text: newText, status: "human-confirmed" } : r
-      )
+    const updated = { ...row, translated_text: newText, status: newStatus };
+    setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
+    if (selectedRow?.key === row.key) setSelectedRow(updated);
+  }
+
+  async function confirmRow(row: EditorRow) {
+    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    await db.execute(
+      `UPDATE translations SET status = 'human-confirmed', translated_by = $1, updated_at = datetime('now')
+       WHERE string_key = $2 AND game_id = $3`,
+      ["You (local)", row.key, row.game_id]
     );
+    const updated = { ...row, status: "human-confirmed" };
+    setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
+    setSelectedRow(updated);
+    refreshCounts();
+  }
+
+  async function toggleFlag(row: EditorRow) {
+    const newFlagged = row.flagged ? 0 : 1;
+    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    await db.execute(
+      `INSERT OR REPLACE INTO translations (string_key, game_id, translated_text, status, translated_by, updated_at, flagged)
+       VALUES ($1, $2, $3, $4, $5, datetime('now'), $6)`,
+      [row.key, row.game_id, row.translated_text ?? "", row.status ?? "untranslated", row.translated_by ?? "You (local)", newFlagged]
+    );
+    const updated = { ...row, flagged: newFlagged };
+    setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
+    if (selectedRow?.key === row.key) setSelectedRow(updated);
   }
 
   // --- Categories / subcategories ---
@@ -458,7 +493,7 @@ function App() {
     });
   }
 
-  return (
+    return (
     <div className="app-shell">
       <div className="title-bar">
         <div className="logo-mark" />
@@ -577,55 +612,62 @@ function App() {
           )}
 
           {rows.length > 0 && (
-            <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "1rem" }}>
-              <thead>
-                <tr style={{ textAlign: "left", borderBottom: "2px solid var(--border)" }}>
-                  <th style={{ width: "10%" }}>Key / Context</th>
-                  <th style={{ width: "40%" }}>English</th>
-                  <th style={{ width: "50%" }}>Afrikaans</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => {
-                  const bgColor =
-                    row.status === "human-confirmed"
-                      ? "rgba(76,175,125,0.15)"
-                      : row.status === "ai-suggested"
-                      ? "rgba(217,164,65,0.15)"
-                      : "rgba(90,95,104,0.15)";
-                  const barColor =
-                    row.status === "human-confirmed"
-                      ? "var(--status-confirmed)"
-                      : row.status === "ai-suggested"
-                      ? "var(--status-ai-draft)"
-                      : "var(--status-untranslated)";
-                  return (
-                    <tr key={row.key} style={{ background: bgColor, borderLeft: `4px solid ${barColor}` }}>
-                      <td style={{ verticalAlign: "top", padding: "0.4rem", fontSize: "0.8rem" }}>
-                        <strong>{row.key}</strong>
-                        <br />
-                        <em style={{ color: "var(--text-dim)" }}>{row.context_label}</em>
-                      </td>
-                      <td style={{ verticalAlign: "top", padding: "0.4rem", color: "var(--text-dim)" }}>
-                        {row.source_text}
-                      </td>
-                      <td style={{ padding: "0.4rem" }}>
-                        <textarea
-                          value={drafts[row.key] ?? ""}
-                          onChange={(e) => updateDraft(row.key, e.target.value)}
-                          onBlur={() => {
-                            saveRow(row);
-                            refreshCounts();
-                          }}
-                          rows={6}
-                          style={{ width: "100%" }}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <div style={{ marginTop: "1rem" }}>
+              {rows.map((row) => {
+                const barColor =
+                  row.status === "human-confirmed"
+                    ? "var(--status-confirmed)"
+                    : row.status === "ai-suggested" || row.status === "human-draft"
+                    ? "var(--status-ai-draft)"
+                    : "var(--status-untranslated)";
+                const isSelected = selectedRow?.key === row.key;
+
+                return (
+                  <div
+                    key={row.key}
+                    onClick={() => setSelectedRow(row)}
+                    className={isSelected ? "row-selected" : ""}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "minmax(0, 10%) minmax(0, 30%) minmax(0, 50%) minmax(0, 10%)",
+                      borderLeft: `4px solid ${barColor}`,
+                      borderBottom: "1px solid var(--border)",
+                      padding: "0.5rem",
+                      gap: "0.5rem",
+                    }}
+                  >
+                    <div style={{ overflowWrap: "break-word", minWidth: 0 }}>
+                      <div className="row-key" style={{ overflowWrap: "break-word" }}>{row.key}</div>
+                      <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>{row.context_label}</div>
+                    </div>
+                      <div style={{ color: "var(--text-dim)", overflowWrap: "break-word" }}>{row.source_text}</div>
+                    <div>
+                      <textarea
+                        value={drafts[row.key] ?? ""}
+                        onChange={(e) => updateDraft(row.key, e.target.value)}
+                        onFocus={() => setSelectedRow(row)}
+                        onBlur={() => saveDraft(row)}
+                        placeholder="— not yet translated —"
+                        rows={4}
+                        style={{ width: "100%" }}
+                      />
+                    </div>
+                    <div className="row-actions">
+                      <button className="action-btn confirm" title="Confirm" onClick={(e) => { e.stopPropagation(); confirmRow(row); }}>
+                        ✓
+                      </button>
+                      <button
+                        className={row.flagged ? "action-btn flag flagged" : "action-btn flag"}
+                        title="Flag for review"
+                        onClick={(e) => { e.stopPropagation(); toggleFlag(row); }}
+                      >
+                        ⚑
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
 
@@ -635,22 +677,43 @@ function App() {
               <button className="collapse-toggle" onClick={() => setContextPanelOpen(false)}>
                 Collapse →
               </button>
-              <p>Select a row to see details here.</p>
-              <p style={{ fontSize: "0.75rem" }}>
-                (Context details — where a string appears, related strings, confirmation info — coming in the next step.)
-              </p>
+              {selectedRow ? (
+                <>
+                  <p className="row-key" style={{ color: "var(--text-main)" }}>{selectedRow.key}</p>
+                  <p>
+                    <strong>Status:</strong>{" "}
+                    {selectedRow.status === "human-confirmed"
+                      ? "Confirmed"
+                      : selectedRow.status === "ai-suggested"
+                      ? "AI draft (unconfirmed)"
+                      : selectedRow.status === "human-draft"
+                      ? "Draft (unconfirmed)"
+                      : "Untranslated"}
+                  </p>
+                  {selectedRow.translated_by && (
+                    <p>
+                      <strong>Last edited by:</strong> {selectedRow.translated_by}
+                    </p>
+                  )}
+                  {selectedRow.updated_at && (
+                    <p>
+                      <strong>Last updated:</strong> {selectedRow.updated_at}
+                    </p>
+                  )}
+                  {selectedRow.flagged ? <p style={{ color: "#e05a5a" }}>⚑ Flagged for review</p> : null}
+                  <p>
+                    <strong>Category:</strong> {categoryFilter ?? "—"}
+                  </p>
+                  <p style={{ fontSize: "0.75rem", wordBreak: "break-all" }}>
+                    <strong>Source file:</strong> {selectedRow.file_path}
+                  </p>
+                </>
+              ) : (
+                <p>Select a row to see details here.</p>
+              )}
             </>
           )}
         </div>
-        {!contextPanelOpen && (
-          <button
-            className="collapse-toggle"
-            onClick={() => setContextPanelOpen(true)}
-            style={{ writingMode: "vertical-rl" }}
-          >
-            ← Details
-          </button>
-        )}
       </div>
 
       <div className="status-bar">
