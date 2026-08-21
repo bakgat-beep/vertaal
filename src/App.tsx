@@ -37,6 +37,31 @@ interface CategoryCount {
   subcategories: SubcategoryCount[];
 }
 
+  interface ProtectedText {
+    text: string;
+    tokens: string[];
+  }
+
+  function protectTokens(source: string): ProtectedText {
+    // Matches $VARIABLE$, [Function.Call], #tagname (opening), #! (closing), and @icon! —
+    // each protected individually, so any real English text between them stays visible.
+    const tokenPattern = /#!|#[A-Za-z_][A-Za-z0-9_]*|\$[^$]+\$|\[[^\]]+\]|@\S+!/g;
+    const tokens: string[] = [];
+    const text = source.replace(tokenPattern, (match) => {
+      tokens.push(match);
+      return `__TOKEN_${tokens.length - 1}__`;
+    });
+    return { text, tokens };
+  }
+
+  function restoreTokens(translatedText: string, tokens: string[]): string {
+    let result = translatedText;
+    tokens.forEach((token, i) => {
+      result = result.replace(`__TOKEN_${i}__`, token);
+    });
+    return result;
+  }
+
 function parseLocFile(content: string): ParsedString[] {
   const results: ParsedString[] = [];
   const lines = content.split("\n");
@@ -68,6 +93,9 @@ function App() {
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
 
   const [selectedRow, setSelectedRow] = useState<EditorRow | null>(null);
+
+  const [glossaryEnglish, setGlossaryEnglish] = useState("");
+  const [glossaryAfrikaans, setGlossaryAfrikaans] = useState("");
 
   const [statusCounts, setStatusCounts] = useState({
     untranslated: 0,
@@ -483,7 +511,7 @@ function App() {
         (SELECT COUNT(*) FROM translations WHERE status = 'human-confirmed') as confirmed,
         (SELECT COUNT(*) FROM translations WHERE status = 'ai-suggested') as ai_draft
     `)) as { total: number; confirmed: number; ai_draft: number }[];
-
+    
     const r = result[0];
     setStatusCounts({
       total: r.total,
@@ -491,6 +519,127 @@ function App() {
       aiDraft: r.ai_draft,
       untranslated: r.total - r.confirmed - r.ai_draft,
     });
+  }
+
+  async function addGlossaryTerm() {
+    if (!glossaryEnglish.trim() || !glossaryAfrikaans.trim()) return;
+    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    await db.execute(
+      "INSERT INTO glossary (english_term, afrikaans_term) VALUES ($1, $2)",
+      [glossaryEnglish.trim(), glossaryAfrikaans.trim()]
+    );
+    setStatus(`Added glossary term: "${glossaryEnglish}" → "${glossaryAfrikaans}"`);
+    setGlossaryEnglish("");
+    setGlossaryAfrikaans("");
+  }
+
+  async function aiTranslateRow(row: EditorRow) {
+    setStatus(`Requesting AI translation for ${row.key}...`);
+    try {
+      const { text: protectedText, tokens } = protectTokens(row.source_text);
+
+      const db = await Database.load("sqlite:pdx-afrikaans.db");
+      const glossaryRows = (await db.select(
+        "SELECT english_term, afrikaans_term FROM glossary"
+      )) as { english_term: string; afrikaans_term: string }[];
+
+      const matchedTerms = glossaryRows.filter((g) =>
+        row.source_text.toLowerCase().includes(g.english_term.toLowerCase())
+      );
+
+      let glossaryInstruction = "";
+      if (matchedTerms.length > 0) {
+        const lines = matchedTerms
+          .map((t) => `- "${t.english_term}" must be translated as "${t.afrikaans_term}"`)
+          .join("\n");
+        glossaryInstruction = `\n\nFollow these mandatory terminology rules:\n${lines}`;
+      }
+
+      const prompt =
+        `You are a professional English (en) to Afrikaans (af) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Afrikaans grammar, vocabulary, and cultural sensitivities. Produce only the Afrikaans translation, without any additional explanations or commentary.${glossaryInstruction}\n\nPlease translate the following English text into Afrikaans:\n\n${protectedText}`;
+
+      const response = await fetch("http://localhost:11434/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "translategemma:4b",
+          messages: [{ role: "user", content: prompt }],
+          stream: false,
+        }),
+      });
+
+      if (!response.ok) {
+        setStatus(`AI translation failed: ${response.status} ${response.statusText}`);
+        return;
+      }
+
+      const data = await response.json();
+      const finalTranslation = restoreTokens(data.message.content.trim(), tokens);
+
+      await db.execute(
+        `INSERT OR REPLACE INTO translations (string_key, game_id, translated_text, status, translated_by, updated_at, flagged)
+         VALUES ($1, $2, $3, 'ai-suggested', $4, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $5 AND game_id = $6), 0))`,
+        [row.key, row.game_id, finalTranslation, "TranslateGemma:4b", row.key, row.game_id]
+      );
+
+      await db.execute(
+        `INSERT INTO translation_history (string_key, game_id, old_text, new_text, changed_by)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [row.key, row.game_id, row.translated_text ?? "", finalTranslation, "TranslateGemma:4b"]
+      );
+
+      const updated: EditorRow = {
+        ...row,
+        translated_text: finalTranslation,
+        status: "ai-suggested",
+        translated_by: "TranslateGemma:4b",
+      };
+      setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
+      setDrafts((prev) => ({ ...prev, [row.key]: finalTranslation }));
+      if (selectedRow?.key === row.key) setSelectedRow(updated);
+      refreshCounts();
+      setStatus(`AI translated ${row.key}${matchedTerms.length > 0 ? " (glossary applied)" : ""}.`);
+    } catch (err) {
+      setStatus(`AI translation error: ${err}`);
+    }
+  }
+
+  function testTokenProtection() {
+    const original = '#trigger_pass @trigger_pass! $TEXT$#!';
+    const { text, tokens } = protectTokens(original);
+    const restored = restoreTokens(text, tokens);
+    setStatus(`Protected: "${text}" | Restored matches original: ${restored === original}`);
+  }
+
+    async function testOllamaConnection() {
+    setStatus("Sending test request to Ollama...");
+    try {
+      const response = await fetch("http://localhost:11434/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "translategemma:4b",
+          messages: [
+            {
+              role: "user",
+              content:
+                "You are a professional English (en) to Afrikaans (af) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Afrikaans grammar, vocabulary, and cultural sensitivities. Produce only the Afrikaans translation, without any additional explanations or commentary. Please translate the following English text into Afrikaans:\n\nHello, welcome to the game.",
+            },
+          ],
+          stream: false,
+        }),
+      });
+
+      if (!response.ok) {
+        setStatus(`Ollama request failed: ${response.status} ${response.statusText}`);
+        return;
+      }
+
+      const data = await response.json();
+      setStatus(`Ollama responded: "${data.message.content}"`);
+    } catch (err) {
+      setStatus(`Could not reach Ollama: ${err}`);
+    }
   }
 
     return (
@@ -518,6 +667,22 @@ function App() {
         />
         <button onClick={runSearch}>Search</button>
 
+        <input
+          type="text"
+          value={glossaryEnglish}
+          onChange={(e) => setGlossaryEnglish(e.target.value)}
+          placeholder="English term"
+          style={{ width: "110px" }}
+        />
+        <input
+          type="text"
+          value={glossaryAfrikaans}
+          onChange={(e) => setGlossaryAfrikaans(e.target.value)}
+          placeholder="Afrikaans term"
+          style={{ width: "110px" }}
+        />
+        <button onClick={addGlossaryTerm}>Add Glossary Term</button>
+
         <div className="filter-chips">
           <span className="chip">
             <span className="chip-dot" style={{ background: "var(--status-untranslated)" }} />
@@ -536,9 +701,8 @@ function App() {
         <div className="toolbar-spacer" />
 
         <button onClick={importFolder}>Import Folder</button>{" "}
-        <button onClick={backfillCategories}>Backfill Categories (run once)</button>{" "}
-        <button onClick={backfillSubcategories}>Backfill Subcategories (run once)</button>
-      </div>
+        <button onClick={testTokenProtection}>Test Token Protection</button>
+       </div>
 
       <div className="content-columns">
         <div className="sidebar">
@@ -653,6 +817,21 @@ function App() {
                       />
                     </div>
                     <div className="row-actions">
+                                          <div className="row-actions">
+                      <button className="action-btn" title="AI translate" onClick={(e) => { e.stopPropagation(); aiTranslateRow(row); }}>
+                        AI
+                      </button>
+                      <button className="action-btn confirm" title="Confirm" onClick={(e) => { e.stopPropagation(); confirmRow(row); }}>
+                        ✓
+                      </button>
+                      <button
+                        className={row.flagged ? "action-btn flag flagged" : "action-btn flag"}
+                        title="Flag for review"
+                        onClick={(e) => { e.stopPropagation(); toggleFlag(row); }}
+                      >
+                        ⚑
+                      </button>
+                    </div>
                       <button className="action-btn confirm" title="Confirm" onClick={(e) => { e.stopPropagation(); confirmRow(row); }}>
                         ✓
                       </button>

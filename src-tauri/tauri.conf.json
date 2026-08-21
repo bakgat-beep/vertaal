@@ -19,7 +19,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:11434; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
