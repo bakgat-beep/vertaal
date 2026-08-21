@@ -19,7 +19,19 @@ interface EditorRow {
   status: string | null;
 }
 
-type ViewMode = "all" | "untranslated" | "translated" | "search";
+type ViewMode = "all" | "untranslated" | "translated" | "search" | "category" | "subcategory";
+
+interface SubcategoryCount {
+  subcategory: string;
+  total: number;
+  untranslated: number;
+}
+interface CategoryCount {
+  category: string;
+  total: number;
+  untranslated: number;
+  subcategories: SubcategoryCount[];
+}
 
 function parseLocFile(content: string): ParsedString[] {
   const results: ParsedString[] = [];
@@ -34,12 +46,6 @@ function parseLocFile(content: string): ParsedString[] {
 
 const BATCH_SIZE = 100;
 
-const STATUS_COLORS: Record<string, string> = {
-  untranslated: "#f8d7da",
-  "ai-suggested": "#fff3cd",
-  "human-confirmed": "#d4edda",
-};
-
 function App() {
   const [status, setStatus] = useState("");
   const [count, setCount] = useState<number | null>(null);
@@ -49,6 +55,13 @@ function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [searchTerm, setSearchTerm] = useState("");
+  const [contextPanelOpen, setContextPanelOpen] = useState(true);
+
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const [subcategoryFilter, setSubcategoryFilter] = useState<string | null>(null);
+
+  const [categories, setCategories] = useState<CategoryCount[]>([]);
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
 
   const [statusCounts, setStatusCounts] = useState({
     untranslated: 0,
@@ -59,6 +72,7 @@ function App() {
 
   useEffect(() => {
     refreshCounts();
+    loadCategories();
   }, []);
 
   async function findLocFiles(dirPath: string): Promise<string[]> {
@@ -117,7 +131,7 @@ function App() {
 
   // --- Unified page loader: respects whichever view is currently active ---
 
-  async function loadPage(mode: ViewMode, newOffset: number) {
+  async function loadPage(mode: ViewMode, newOffset: number, category?: string, subcategory?: string) {
     setStatus("Loading...");
     const db = await Database.load("sqlite:pdx-afrikaans.db");
 
@@ -155,6 +169,18 @@ function App() {
          LIMIT $4 OFFSET $5`,
         [likeTerm, likeTerm, likeTerm, BATCH_SIZE, newOffset]
       )) as EditorRow[];
+    } else if (mode === "category") {
+      batch = (await db.select(
+        `${baseSelect} WHERE s.category = $1
+         ORDER BY s.file_path, s.key LIMIT $2 OFFSET $3`,
+        [category, BATCH_SIZE, newOffset]
+      )) as EditorRow[];
+    } else if (mode === "subcategory") {
+      batch = (await db.select(
+        `${baseSelect} WHERE s.category = $1 AND s.subcategory = $2
+         ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4`,
+        [category, subcategory, BATCH_SIZE, newOffset]
+      )) as EditorRow[];
     }
 
     setRows(batch);
@@ -185,6 +211,18 @@ function App() {
     setDrafts((prev) => ({ ...prev, [key]: value }));
   }
 
+  function selectCategory(category: string) {
+    setCategoryFilter(category);
+    setSubcategoryFilter(null);
+    loadPage("category", 0, category);
+  }
+
+  function selectSubcategory(category: string, subcategory: string) {
+    setCategoryFilter(category);
+    setSubcategoryFilter(subcategory);
+    loadPage("subcategory", 0, category, subcategory);
+  }
+
   async function saveRow(row: EditorRow) {
     const newText = drafts[row.key] ?? "";
     if (newText === (row.translated_text ?? "")) return;
@@ -210,17 +248,104 @@ function App() {
     );
   }
 
+  // --- Categories / subcategories ---
+
+  function extractCategory(fullPath: string): string {
+    const marker = "\\game\\";
+    const idx = fullPath.indexOf(marker);
+    if (idx === -1) return "other";
+    const afterGame = fullPath.substring(idx + marker.length);
+    return afterGame.split("\\")[0];
+  }
+
+  async function backfillCategories() {
+    setStatus("Backfilling categories...");
+    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    const distinctFiles = (await db.select("SELECT DISTINCT file_path FROM strings")) as { file_path: string }[];
+    let done = 0;
+    for (const row of distinctFiles) {
+      const category = extractCategory(row.file_path);
+      await db.execute("UPDATE strings SET category = $1 WHERE file_path = $2", [category, row.file_path]);
+      done++;
+      if (done % 50 === 0) setStatus(`Backfilling categories... ${done}/${distinctFiles.length} files`);
+    }
+    setStatus(`Category backfill complete. Processed ${distinctFiles.length} files.`);
+    await loadCategories();
+  }
+
+  function extractSubcategory(fullPath: string): string {
+    const marker = "\\localization\\";
+    const idx = fullPath.indexOf(marker);
+    if (idx === -1) return "general";
+    const afterLoc = fullPath.substring(idx + marker.length);
+    const parts = afterLoc.split("\\");
+    if (parts.length <= 2) return "general";
+    return parts[1];
+  }
+
+  async function backfillSubcategories() {
+    setStatus("Backfilling subcategories...");
+    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    const distinctFiles = (await db.select("SELECT DISTINCT file_path FROM strings")) as { file_path: string }[];
+    let done = 0;
+    for (const row of distinctFiles) {
+      const subcategory = extractSubcategory(row.file_path);
+      await db.execute("UPDATE strings SET subcategory = $1 WHERE file_path = $2", [subcategory, row.file_path]);
+      done++;
+      if (done % 50 === 0) setStatus(`Backfilling subcategories... ${done}/${distinctFiles.length}`);
+    }
+    setStatus(`Subcategory backfill complete. Processed ${distinctFiles.length} files.`);
+    await loadCategories();
+  }
+
+  async function loadCategories() {
+    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    const rows = (await db.select(`
+      SELECT s.category as category, s.subcategory as subcategory,
+             COUNT(*) as total,
+             SUM(CASE WHEN t.status IS NULL OR t.status = 'untranslated' THEN 1 ELSE 0 END) as untranslated
+      FROM strings s
+      LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
+      WHERE s.category IS NOT NULL
+      GROUP BY s.category, s.subcategory
+      ORDER BY total DESC
+    `)) as { category: string; subcategory: string | null; total: number; untranslated: number }[];
+
+    const grouped: Record<string, CategoryCount> = {};
+    for (const row of rows) {
+      if (!grouped[row.category]) {
+        grouped[row.category] = { category: row.category, total: 0, untranslated: 0, subcategories: [] };
+      }
+      grouped[row.category].total += row.total;
+      grouped[row.category].untranslated += row.untranslated;
+      grouped[row.category].subcategories.push({
+        subcategory: row.subcategory ?? "general",
+        total: row.total,
+        untranslated: row.untranslated,
+      });
+    }
+
+    setCategories(Object.values(grouped).sort((a, b) => b.total - a.total));
+  }
+
+  function toggleCategoryExpanded(category: string) {
+    setExpandedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
+  }
+
   // --- Mod export ---
 
   function toModRelativePath(fullPath: string): string | null {
     const marker = "\\game\\";
     const idx = fullPath.indexOf(marker);
     if (idx === -1) return null;
-
     const afterGame = fullPath.substring(idx + marker.length);
     const parts = afterGame.split("\\");
     const fileName = parts.pop();
-
     return [...parts, "replace", fileName].join("\\");
   }
 
@@ -272,7 +397,6 @@ function App() {
     for (const [relPath, entries] of Object.entries(byFile)) {
       const fullOutputPath = await join(modRoot, relPath);
       const folderPath = fullOutputPath.substring(0, fullOutputPath.lastIndexOf("\\"));
-
       await mkdir(folderPath, { recursive: true });
 
       let fileContent = "l_english:\n";
@@ -280,8 +404,7 @@ function App() {
         const safeText = entry.translated_text.replace(/"/g, '\\"');
         fileContent += ` ${entry.key}: "${safeText}"\n`;
       }
-
-        await writeTextFileWithBom(fullOutputPath, fileContent);
+      await writeTextFileWithBom(fullOutputPath, fileContent);
     }
 
     await mkdir(await join(modRoot, ".metadata"), { recursive: true });
@@ -304,7 +427,6 @@ function App() {
       )
     );
 
-    
     const placeholderPngBase64 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
     const pngBytes = Uint8Array.from(atob(placeholderPngBase64), (c) => c.charCodeAt(0));
@@ -336,7 +458,7 @@ function App() {
     });
   }
 
-    return (
+  return (
     <div className="app-shell">
       <div className="title-bar">
         <div className="logo-mark" />
@@ -348,87 +470,186 @@ function App() {
         </button>
       </div>
 
-      <div className="main-content">
-        <button onClick={importFolder}>Import Entire Folder</button>{" "}
-        <button onClick={() => loadPage("all", 0)}>Open Editor</button>{" "}
-        <button onClick={() => loadPage("untranslated", 0)}>Next Untranslated Batch</button>{" "}
-        <button onClick={toggleTranslatedView}>
-          {viewMode === "translated" ? "← Back to Editor" : "Review My Translations"}
-        </button>
-
-        <br /><br />
-
+      <div className="toolbar">
         <input
           type="text"
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") runSearch();
+          }}
           placeholder="Search by key, English, or Afrikaans text..."
-          style={{ width: "300px" }}
-        />{" "}
+          style={{ width: "260px" }}
+        />
         <button onClick={runSearch}>Search</button>
 
-        <p style={{ color: "var(--text-dim)" }}>{status}</p>
-        {count !== null && <p style={{ color: "var(--text-dim)" }}>Total strings in database: {count}</p>}
+        <div className="filter-chips">
+          <span className="chip">
+            <span className="chip-dot" style={{ background: "var(--status-untranslated)" }} />
+            Untranslated
+          </span>
+          <span className="chip">
+            <span className="chip-dot" style={{ background: "var(--status-ai-draft)" }} />
+            AI draft
+          </span>
+          <span className="chip">
+            <span className="chip-dot" style={{ background: "var(--status-confirmed)" }} />
+            Confirmed
+          </span>
+        </div>
 
-        {rows.length > 0 && (
-          <div style={{ margin: "0.5rem 0" }}>
-            <button onClick={() => loadPage(viewMode, Math.max(0, offset - BATCH_SIZE))} disabled={offset === 0}>
-              ← Previous 100
-            </button>{" "}
-            <button onClick={() => loadPage(viewMode, offset + BATCH_SIZE)}>Next 100 →</button>
+        <div className="toolbar-spacer" />
+
+        <button onClick={importFolder}>Import Folder</button>{" "}
+        <button onClick={backfillCategories}>Backfill Categories (run once)</button>{" "}
+        <button onClick={backfillSubcategories}>Backfill Subcategories (run once)</button>
+      </div>
+
+      <div className="content-columns">
+        <div className="sidebar">
+          <div className="sidebar-item" onClick={() => loadPage("all", 0)}>
+            <span>All Files</span>
+            <span className="sidebar-count">{statusCounts.total.toLocaleString()}</span>
           </div>
-        )}
+          <div className="sidebar-item" onClick={() => loadPage("untranslated", 0)}>
+            <span>Untranslated</span>
+            <span className="sidebar-count">{statusCounts.untranslated.toLocaleString()}</span>
+          </div>
+          <div className="sidebar-item" onClick={toggleTranslatedView}>
+            <span>Confirmed</span>
+            <span className="sidebar-count">{statusCounts.confirmed.toLocaleString()}</span>
+          </div>
 
-        {rows.length > 0 && (
-          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "1rem" }}>
-            <thead>
-              <tr style={{ textAlign: "left", borderBottom: "2px solid var(--border)" }}>
-                <th style={{ width: "10%" }}>Key / Context</th>
-                <th style={{ width: "40%" }}>English</th>
-                <th style={{ width: "50%" }}>Afrikaans</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const bgColor =
-                  row.status === "human-confirmed"
-                    ? "rgba(76,175,125,0.15)"
-                    : row.status === "ai-suggested"
-                    ? "rgba(217,164,65,0.15)"
-                    : "rgba(90,95,104,0.15)";
-                const barColor =
-                  row.status === "human-confirmed"
-                    ? "var(--status-confirmed)"
-                    : row.status === "ai-suggested"
-                    ? "var(--status-ai-draft)"
-                    : "var(--status-untranslated)";
-                return (
-                  <tr key={row.key} style={{ background: bgColor, borderLeft: `4px solid ${barColor}` }}>
-                    <td style={{ verticalAlign: "top", padding: "0.4rem", fontSize: "0.8rem" }}>
-                      <strong>{row.key}</strong>
-                      <br />
-                      <em style={{ color: "var(--text-dim)" }}>{row.context_label}</em>
-                    </td>
-                    <td style={{ verticalAlign: "top", padding: "0.4rem", color: "var(--text-dim)" }}>
-                      {row.source_text}
-                    </td>
-                    <td style={{ padding: "0.4rem" }}>
-                      <textarea
-                        value={drafts[row.key] ?? ""}
-                        onChange={(e) => updateDraft(row.key, e.target.value)}
-                        onBlur={() => {
-                          saveRow(row);
-                          refreshCounts();
-                        }}
-                        rows={6}
-                        style={{ width: "100%" }}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div style={{ height: "1px", background: "var(--border)", margin: "0.6rem 0" }} />
+
+          {categories.map((cat) => (
+            <div key={cat.category}>
+              <div className="sidebar-item" onClick={() => selectCategory(cat.category)}>
+                <span onClick={(e) => { e.stopPropagation(); toggleCategoryExpanded(cat.category); }}>
+                  {expandedCategories.has(cat.category) ? "▾ " : "▸ "}
+                  {cat.category.replace(/_/g, " ")}
+                </span>
+                <span className="sidebar-count" style={{ opacity: cat.untranslated === 0 ? 0.4 : 1 }}>
+                  {cat.untranslated.toLocaleString()}
+                </span>
+              </div>
+
+              {expandedCategories.has(cat.category) &&
+                cat.subcategories.map((sub) => (
+                  <div
+                    key={sub.subcategory}
+                    className="sidebar-item"
+                    style={{ paddingLeft: "1.8rem" }}
+                    onClick={() => selectSubcategory(cat.category, sub.subcategory)}
+                  >
+                    <span style={{ fontSize: "0.8rem" }}>{sub.subcategory.replace(/_/g, " ")}</span>
+                    <span className="sidebar-count" style={{ opacity: sub.untranslated === 0 ? 0.4 : 1 }}>
+                      {sub.untranslated.toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          ))}
+        </div>
+
+        <div className="editor-column">
+          <p style={{ color: "var(--text-dim)" }}>{status}</p>
+          {count !== null && <p style={{ color: "var(--text-dim)" }}>Total strings in database: {count}</p>}
+
+          {rows.length > 0 && (
+            <div style={{ margin: "0.5rem 0" }}>
+              <button
+                onClick={() =>
+                  loadPage(viewMode, Math.max(0, offset - BATCH_SIZE), categoryFilter ?? undefined, subcategoryFilter ?? undefined)
+                }
+                disabled={offset === 0}
+              >
+                ← Previous 100
+              </button>{" "}
+              <button
+                onClick={() =>
+                  loadPage(viewMode, offset + BATCH_SIZE, categoryFilter ?? undefined, subcategoryFilter ?? undefined)
+                }
+              >
+                Next 100 →
+              </button>
+            </div>
+          )}
+
+          {rows.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "1rem" }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: "2px solid var(--border)" }}>
+                  <th style={{ width: "10%" }}>Key / Context</th>
+                  <th style={{ width: "40%" }}>English</th>
+                  <th style={{ width: "50%" }}>Afrikaans</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const bgColor =
+                    row.status === "human-confirmed"
+                      ? "rgba(76,175,125,0.15)"
+                      : row.status === "ai-suggested"
+                      ? "rgba(217,164,65,0.15)"
+                      : "rgba(90,95,104,0.15)";
+                  const barColor =
+                    row.status === "human-confirmed"
+                      ? "var(--status-confirmed)"
+                      : row.status === "ai-suggested"
+                      ? "var(--status-ai-draft)"
+                      : "var(--status-untranslated)";
+                  return (
+                    <tr key={row.key} style={{ background: bgColor, borderLeft: `4px solid ${barColor}` }}>
+                      <td style={{ verticalAlign: "top", padding: "0.4rem", fontSize: "0.8rem" }}>
+                        <strong>{row.key}</strong>
+                        <br />
+                        <em style={{ color: "var(--text-dim)" }}>{row.context_label}</em>
+                      </td>
+                      <td style={{ verticalAlign: "top", padding: "0.4rem", color: "var(--text-dim)" }}>
+                        {row.source_text}
+                      </td>
+                      <td style={{ padding: "0.4rem" }}>
+                        <textarea
+                          value={drafts[row.key] ?? ""}
+                          onChange={(e) => updateDraft(row.key, e.target.value)}
+                          onBlur={() => {
+                            saveRow(row);
+                            refreshCounts();
+                          }}
+                          rows={6}
+                          style={{ width: "100%" }}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className={contextPanelOpen ? "context-panel" : "context-panel context-panel-collapsed"}>
+          {contextPanelOpen && (
+            <>
+              <button className="collapse-toggle" onClick={() => setContextPanelOpen(false)}>
+                Collapse →
+              </button>
+              <p>Select a row to see details here.</p>
+              <p style={{ fontSize: "0.75rem" }}>
+                (Context details — where a string appears, related strings, confirmation info — coming in the next step.)
+              </p>
+            </>
+          )}
+        </div>
+        {!contextPanelOpen && (
+          <button
+            className="collapse-toggle"
+            onClick={() => setContextPanelOpen(true)}
+            style={{ writingMode: "vertical-rl" }}
+          >
+            ← Details
+          </button>
         )}
       </div>
 

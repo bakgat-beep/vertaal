@@ -131,3 +131,116 @@ input, textarea {
 table {
   background: var(--bg-panel);
 }
+
+.toolbar {
+  height: 40px;
+  background: var(--bg-panel);
+  display: flex;
+  align-items: center;
+  padding: 0 1rem;
+  gap: 0.6rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.filter-chips {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-row);
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: var(--text-dim);
+}
+
+.chip:hover {
+  background: var(--bg-row-hover);
+}
+
+.chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.toolbar-spacer {
+  flex-grow: 1;
+}
+
+.content-columns {
+  display: flex;
+  flex-grow: 1;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 0.6rem 0;
+}
+
+.sidebar-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text-main);
+}
+
+.sidebar-item:hover {
+  background: var(--bg-row-hover);
+}
+
+.sidebar-count {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  background: var(--bg-row);
+  border-radius: 8px;
+  padding: 0.05rem 0.5rem;
+}
+
+.editor-column {
+  flex-grow: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.context-panel {
+  width: 260px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 1rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.context-panel-collapsed {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border-left: none;
+}
+
+.collapse-toggle {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+}

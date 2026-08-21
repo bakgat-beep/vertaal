@@ -6,12 +6,26 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let migrations = vec![tauri_plugin_sql::Migration {
-        version: 1,
-        description: "initial_schema",
-        sql: include_str!("../migrations/0001_initial.sql"),
-        kind: tauri_plugin_sql::MigrationKind::Up,
-    }];
+    let migrations = vec![
+        tauri_plugin_sql::Migration {
+            version: 1,
+            description: "initial_schema",
+            sql: include_str!("../migrations/0001_initial.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+        tauri_plugin_sql::Migration {
+            version: 2,
+            description: "add_category_column",
+            sql: include_str!("../migrations/0002_add_category.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+        tauri_plugin_sql::Migration {
+            version: 3,
+            description: "add_subcategory_column",
+            sql: include_str!("../migrations/0003_add_subcategory.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+    ];
 
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
