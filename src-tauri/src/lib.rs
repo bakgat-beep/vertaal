@@ -43,6 +43,12 @@ pub fn run() {
             sql: include_str!("../migrations/0006_projects_and_languages.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
+        tauri_plugin_sql::Migration {
+            version: 7,
+            description: "add_project_install_path",
+            sql: include_str!("../migrations/0007_install_path.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

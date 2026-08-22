@@ -1,3 +1,5 @@
+import WelcomeScreen from "./WelcomeScreen";
+import { findLocFiles } from "./import";
 import { useState, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile, readDir, writeTextFile, mkdir, writeFile } from "@tauri-apps/plugin-fs";
@@ -62,25 +64,18 @@ function App() {
     total: 0,
   });
 
-  useEffect(() => {
-    loadCurrentProject();
-  }, []);
+  const [showWelcome, setShowWelcome] = useState(true);
+
+  function handleProjectSelected(project: Project) {
+    setCurrentProject(project);
+    setShowWelcome(false);
+  }
 
   useEffect(() => {
     if (!currentProject) return;
     refreshCounts();
     loadCategories();
   }, [currentProject]);
-
-  // --- Project loading (temporary: always loads the first/only project until the welcome screen exists) ---
-
-  async function loadCurrentProject() {
-    const db = await getDb();
-    const projects = (await db.select("SELECT * FROM projects ORDER BY id LIMIT 1")) as Project[];
-    if (projects.length > 0) {
-      setCurrentProject(projects[0]);
-    }
-  }
 
   function adapter() {
     if (!currentProject) return null;
@@ -89,24 +84,10 @@ function App() {
 
   // --- Import ---
 
-  async function findLocFiles(dirPath: string, sourceLanguage: string): Promise<string[]> {
-    const entries = await readDir(dirPath);
-    let found: string[] = [];
-    for (const entry of entries) {
-      const fullPath = await join(dirPath, entry.name ?? "");
-      if (entry.isDirectory) {
-        found = found.concat(await findLocFiles(fullPath, sourceLanguage));
-      } else if (entry.name?.endsWith(`_l_${sourceLanguage}.yml`)) {
-        found.push(fullPath);
-      }
-    }
-    return found;
-  }
-
   async function importFolder() {
     if (!currentProject) return;
     setStatus("Waiting for folder selection...");
-    const folderPath = await open({ directory: true, multiple: false });
+    const folderPath = await open({ directory: true, multiple: false, defaultPath: currentProject.install_path ?? undefined });
     if (!folderPath) {
       setStatus("No folder selected.");
       return;
@@ -405,7 +386,8 @@ function App() {
     if (!gm) return;
 
     setStatus("Choose a folder to export the mod into...");
-    const destFolder = await open({ directory: true, multiple: false });
+        const defaultDest = currentProject.output_path ?? (await gm.detectModPath());
+    const destFolder = await open({ directory: true, multiple: false, defaultPath: defaultDest });
     if (!destFolder) {
       setStatus("Export cancelled.");
       return;
@@ -465,6 +447,9 @@ function App() {
     await writeFile(await join(modRoot, ".metadata", "thumbnail.png"), pngBytes);
 
     await writeTextFile(await join(modRoot, "descriptor.mod"), gm.buildDescriptor(currentProject.mod_name));
+    
+        const db2 = await getDb();
+    await db2.execute("UPDATE projects SET output_path = $1 WHERE id = $2", [destFolder, currentProject.id]);
 
     setStatus(`Export complete. Wrote ${translated.length} strings across ${Object.keys(byFile).length} files to ${modRoot}`);
   }
@@ -655,18 +640,8 @@ function App() {
     setStatus("Stopping batch after current translation finishes...");
   }
 
-  if (!currentProject) {
-    return (
-      <div className="app-shell">
-        <div className="title-bar">
-          <div className="logo-mark" />
-          <span className="app-name">Vertaal</span>
-        </div>
-        <div className="main-content">
-          <p>Loading project...</p>
-        </div>
-      </div>
-    );
+  if (showWelcome || !currentProject) {
+    return <WelcomeScreen onProjectSelected={handleProjectSelected} />;
   }
 
   return (
@@ -678,6 +653,7 @@ function App() {
           — {adapter()?.displayName ?? currentProject.game_id} → {currentProject.target_language}
         </span>
         <div className="title-bar-spacer" />
+        <button onClick={() => setShowWelcome(true)}>Projects</button>
         <button className="build-mod-button" onClick={exportMod}>
           Build Mod
         </button>

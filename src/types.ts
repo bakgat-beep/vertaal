@@ -18,4 +18,5 @@ export interface Project {
   target_language: string;
   mod_name: string;
   output_path: string | null;
+  install_path: string | null;
 }
