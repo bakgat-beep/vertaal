@@ -1,27 +1,13 @@
-import { useState, useEffect } from "react";
-import Database from "@tauri-apps/plugin-sql";
+import { useState, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile, readDir, writeTextFile, mkdir, writeFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import "./App.css";
-
-interface ParsedString {
-  key: string;
-  text: string;
-}
-
-interface EditorRow {
-  key: string;
-  game_id: string;
-  source_text: string;
-  context_label: string | null;
-  translated_text: string | null;
-  status: string | null;
-  flagged: number | null;
-  translated_by: string | null;
-  updated_at: string | null;
-  file_path?: string | null;
-}
+import { getDb } from "./db";
+import type { EditorRow, Project } from "./types";
+import { parseLocFile, protectTokens, restoreTokens } from "./parser";
+import { addGlossaryTerm as addGlossaryTermDb, loadGlossaryTerms, matchGlossaryTerms } from "./glossary";
+import { GAME_ADAPTERS } from "./games";
 
 type ViewMode = "all" | "untranslated" | "translated" | "search" | "category" | "subcategory";
 
@@ -37,47 +23,13 @@ interface CategoryCount {
   subcategories: SubcategoryCount[];
 }
 
-  interface ProtectedText {
-    text: string;
-    tokens: string[];
-  }
-
-  function protectTokens(source: string): ProtectedText {
-    // Matches $VARIABLE$, [Function.Call], #tagname (opening), #! (closing), and @icon! —
-    // each protected individually, so any real English text between them stays visible.
-    const tokenPattern = /#!|#[A-Za-z_][A-Za-z0-9_]*|\$[^$]+\$|\[[^\]]+\]|@\S+!/g;
-    const tokens: string[] = [];
-    const text = source.replace(tokenPattern, (match) => {
-      tokens.push(match);
-      return `__TOKEN_${tokens.length - 1}__`;
-    });
-    return { text, tokens };
-  }
-
-  function restoreTokens(translatedText: string, tokens: string[]): string {
-    let result = translatedText;
-    tokens.forEach((token, i) => {
-      result = result.replace(`__TOKEN_${i}__`, token);
-    });
-    return result;
-  }
-
-function parseLocFile(content: string): ParsedString[] {
-  const results: ParsedString[] = [];
-  const lines = content.split("\n");
-  const linePattern = /^\s*([A-Za-z0-9_.]+):\d*\s*"(.*)"\s*$/;
-  for (const line of lines) {
-    const match = line.match(linePattern);
-    if (match) results.push({ key: match[1], text: match[2] });
-  }
-  return results;
-}
-
 const BATCH_SIZE = 100;
 
 function App() {
   const [status, setStatus] = useState("");
   const [count, setCount] = useState<number | null>(null);
+
+  const [currentProject, setCurrentProject] = useState<Project | null>(null);
 
   const [rows, setRows] = useState<EditorRow[]>([]);
   const [offset, setOffset] = useState(0);
@@ -95,7 +47,13 @@ function App() {
   const [selectedRow, setSelectedRow] = useState<EditorRow | null>(null);
 
   const [glossaryEnglish, setGlossaryEnglish] = useState("");
-  const [glossaryAfrikaans, setGlossaryAfrikaans] = useState("");
+  const [glossaryTranslated, setGlossaryTranslated] = useState("");
+  const [glossaryShared, setGlossaryShared] = useState(false);
+
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
+  const [overnightCount, setOvernightCount] = useState("5000");
+  const stopRequestedRef = useRef(false);
 
   const [statusCounts, setStatusCounts] = useState({
     untranslated: 0,
@@ -105,18 +63,40 @@ function App() {
   });
 
   useEffect(() => {
-    refreshCounts();
-    loadCategories();
+    loadCurrentProject();
   }, []);
 
-  async function findLocFiles(dirPath: string): Promise<string[]> {
+  useEffect(() => {
+    if (!currentProject) return;
+    refreshCounts();
+    loadCategories();
+  }, [currentProject]);
+
+  // --- Project loading (temporary: always loads the first/only project until the welcome screen exists) ---
+
+  async function loadCurrentProject() {
+    const db = await getDb();
+    const projects = (await db.select("SELECT * FROM projects ORDER BY id LIMIT 1")) as Project[];
+    if (projects.length > 0) {
+      setCurrentProject(projects[0]);
+    }
+  }
+
+  function adapter() {
+    if (!currentProject) return null;
+    return GAME_ADAPTERS[currentProject.game_id] ?? null;
+  }
+
+  // --- Import ---
+
+  async function findLocFiles(dirPath: string, sourceLanguage: string): Promise<string[]> {
     const entries = await readDir(dirPath);
     let found: string[] = [];
     for (const entry of entries) {
       const fullPath = await join(dirPath, entry.name ?? "");
       if (entry.isDirectory) {
-        found = found.concat(await findLocFiles(fullPath));
-      } else if (entry.name?.endsWith("_l_english.yml")) {
+        found = found.concat(await findLocFiles(fullPath, sourceLanguage));
+      } else if (entry.name?.endsWith(`_l_${sourceLanguage}.yml`)) {
         found.push(fullPath);
       }
     }
@@ -124,6 +104,7 @@ function App() {
   }
 
   async function importFolder() {
+    if (!currentProject) return;
     setStatus("Waiting for folder selection...");
     const folderPath = await open({ directory: true, multiple: false });
     if (!folderPath) {
@@ -131,15 +112,15 @@ function App() {
       return;
     }
     setStatus("Scanning folder for localization files...");
-    const files = await findLocFiles(folderPath as string);
+    const files = await findLocFiles(folderPath as string, currentProject.source_language);
     if (files.length === 0) {
-      setStatus("No _l_english.yml files found in that folder.");
+      setStatus(`No _l_${currentProject.source_language}.yml files found in that folder.`);
       return;
     }
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    const db = await getDb();
     await db.execute(
       "INSERT OR REPLACE INTO games (game_id, display_name, detected_version) VALUES ($1, $2, $3)",
-      ["eu5", "Europa Universalis 5", "1.0"]
+      [currentProject.game_id, adapter()?.displayName ?? currentProject.game_id, "1.0"]
     );
     let totalStrings = 0;
     for (const filePath of files) {
@@ -147,27 +128,33 @@ function App() {
       const content = await readTextFile(filePath);
       const parsed = parseLocFile(content);
       const fileName = filePath.split("\\").pop() ?? filePath;
-      const contextLabel = fileName.replace("_l_english.yml", "").replace(/_/g, " ");
+      const contextLabel = fileName.replace(`_l_${currentProject.source_language}.yml`, "").replace(/_/g, " ");
       for (const item of parsed) {
         const hash = String(item.text.length) + "-" + item.text.slice(0, 20);
         await db.execute(
           `INSERT OR REPLACE INTO strings (key, game_id, source_text, source_text_hash, file_path, context_label)
            VALUES ($1, $2, $3, $4, $5, $6)`,
-          [item.key, "eu5", item.text, hash, filePath, contextLabel]
+          [item.key, currentProject.game_id, item.text, hash, filePath, contextLabel]
         );
         totalStrings++;
       }
     }
-    const countRows = (await db.select("SELECT COUNT(*) as total FROM strings")) as { total: number }[];
+    const countRows = (await db.select(
+      "SELECT COUNT(*) as total FROM strings WHERE game_id = $1",
+      [currentProject.game_id]
+    )) as { total: number }[];
     setCount(countRows[0].total);
     setStatus(`Import complete. Processed ${files.length} files, ${totalStrings} strings this run.`);
   }
 
-  // --- Unified page loader: respects whichever view is currently active ---
+  // --- Unified page loader ---
 
   async function loadPage(mode: ViewMode, newOffset: number, category?: string, subcategory?: string) {
+    if (!currentProject) return;
     setStatus("Loading...");
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    const db = await getDb();
+    const gameId = currentProject.game_id;
+    const lang = currentProject.target_language;
 
     const baseSelect = `
       SELECT s.key as key, s.game_id as game_id, s.source_text as source_text,
@@ -175,47 +162,41 @@ function App() {
              t.translated_text as translated_text, t.status as status,
              t.flagged as flagged, t.translated_by as translated_by, t.updated_at as updated_at
       FROM strings s
-      LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
+      LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $__lang__
+      WHERE s.game_id = $__game__
     `;
 
     let batch: EditorRow[] = [];
 
     if (mode === "all") {
-      batch = (await db.select(
-        `${baseSelect} ORDER BY s.file_path, s.key LIMIT $1 OFFSET $2`,
-        [BATCH_SIZE, newOffset]
-      )) as EditorRow[];
+      const sql = baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") + " ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4";
+      batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
     } else if (mode === "untranslated") {
-      batch = (await db.select(
-        `${baseSelect} WHERE t.status IS NULL OR t.status = 'untranslated'
-         ORDER BY s.file_path, s.key LIMIT $1 OFFSET $2`,
-        [BATCH_SIZE, newOffset]
-      )) as EditorRow[];
+      const sql =
+        baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
+        " AND (t.status IS NULL OR t.status = 'untranslated') ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4";
+      batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
     } else if (mode === "translated") {
-      batch = (await db.select(
-        `${baseSelect} WHERE t.status = 'human-confirmed'
-         ORDER BY t.updated_at DESC LIMIT $1 OFFSET $2`,
-        [BATCH_SIZE, newOffset]
-      )) as EditorRow[];
+      const sql =
+        baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
+        " AND t.status = 'human-confirmed' ORDER BY t.updated_at DESC LIMIT $3 OFFSET $4";
+      batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
     } else if (mode === "search") {
       const likeTerm = `%${searchTerm}%`;
-      batch = (await db.select(
-        `${baseSelect} WHERE s.key LIKE $1 OR s.source_text LIKE $2 OR t.translated_text LIKE $3
-         LIMIT $4 OFFSET $5`,
-        [likeTerm, likeTerm, likeTerm, BATCH_SIZE, newOffset]
-      )) as EditorRow[];
+      const sql =
+        baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
+        " AND (s.key LIKE $3 OR s.source_text LIKE $4 OR t.translated_text LIKE $5) LIMIT $6 OFFSET $7";
+      batch = (await db.select(sql, [lang, gameId, likeTerm, likeTerm, likeTerm, BATCH_SIZE, newOffset])) as EditorRow[];
     } else if (mode === "category") {
-      batch = (await db.select(
-        `${baseSelect} WHERE s.category = $1
-         ORDER BY s.file_path, s.key LIMIT $2 OFFSET $3`,
-        [category, BATCH_SIZE, newOffset]
-      )) as EditorRow[];
+      const sql =
+        baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
+        " AND s.category = $3 ORDER BY s.file_path, s.key LIMIT $4 OFFSET $5";
+      batch = (await db.select(sql, [lang, gameId, category, BATCH_SIZE, newOffset])) as EditorRow[];
     } else if (mode === "subcategory") {
-      batch = (await db.select(
-        `${baseSelect} WHERE s.category = $1 AND s.subcategory = $2
-         ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4`,
-        [category, subcategory, BATCH_SIZE, newOffset]
-      )) as EditorRow[];
+      const sql =
+        baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
+        " AND s.category = $3 AND s.subcategory = $4 ORDER BY s.file_path, s.key LIMIT $5 OFFSET $6";
+      batch = (await db.select(sql, [lang, gameId, category, subcategory, BATCH_SIZE, newOffset])) as EditorRow[];
     }
 
     setRows(batch);
@@ -258,26 +239,27 @@ function App() {
     loadPage("subcategory", 0, category, subcategory);
   }
 
-    async function saveDraft(row: EditorRow) {
+  // --- Draft / confirm / flag ---
+
+  async function saveDraft(row: EditorRow) {
+    if (!currentProject) return;
     const newText = drafts[row.key] ?? "";
     if (newText === (row.translated_text ?? "")) return;
 
-    // Don't downgrade an already-confirmed row just because it was clicked into
-    // without actually being changed further, or re-typed with the same text.
     const newStatus = newText.trim() === "" ? "untranslated" : "human-draft";
-
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    const db = await getDb();
+    const lang = currentProject.target_language;
 
     await db.execute(
-      `INSERT OR REPLACE INTO translations (string_key, game_id, translated_text, status, translated_by, updated_at, flagged)
-       VALUES ($1, $2, $3, $4, $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7), 0))`,
-      [row.key, row.game_id, newText, newStatus, "You (local)", row.key, row.game_id]
+      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged)
+       VALUES ($1, $2, $3, $4, $5, $6, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $7 AND game_id = $8 AND target_language = $9), 0))`,
+      [row.key, row.game_id, lang, newText, newStatus, "You (local)", row.key, row.game_id, lang]
     );
 
     await db.execute(
-      `INSERT INTO translation_history (string_key, game_id, old_text, new_text, changed_by)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [row.key, row.game_id, row.translated_text ?? "", newText, "You (local)"]
+      `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [row.key, row.game_id, lang, row.translated_text ?? "", newText, "You (local)"]
     );
 
     const updated = { ...row, translated_text: newText, status: newStatus };
@@ -286,11 +268,12 @@ function App() {
   }
 
   async function confirmRow(row: EditorRow) {
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    if (!currentProject) return;
+    const db = await getDb();
     await db.execute(
       `UPDATE translations SET status = 'human-confirmed', translated_by = $1, updated_at = datetime('now')
-       WHERE string_key = $2 AND game_id = $3`,
-      ["You (local)", row.key, row.game_id]
+       WHERE string_key = $2 AND game_id = $3 AND target_language = $4`,
+      ["You (local)", row.key, row.game_id, currentProject.target_language]
     );
     const updated = { ...row, status: "human-confirmed" };
     setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
@@ -299,35 +282,42 @@ function App() {
   }
 
   async function toggleFlag(row: EditorRow) {
+    if (!currentProject) return;
     const newFlagged = row.flagged ? 0 : 1;
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    const db = await getDb();
     await db.execute(
-      `INSERT OR REPLACE INTO translations (string_key, game_id, translated_text, status, translated_by, updated_at, flagged)
-       VALUES ($1, $2, $3, $4, $5, datetime('now'), $6)`,
-      [row.key, row.game_id, row.translated_text ?? "", row.status ?? "untranslated", row.translated_by ?? "You (local)", newFlagged]
+      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged)
+       VALUES ($1, $2, $3, $4, $5, $6, datetime('now'), $7)`,
+      [
+        row.key,
+        row.game_id,
+        currentProject.target_language,
+        row.translated_text ?? "",
+        row.status ?? "untranslated",
+        row.translated_by ?? "You (local)",
+        newFlagged,
+      ]
     );
     const updated = { ...row, flagged: newFlagged };
     setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
     if (selectedRow?.key === row.key) setSelectedRow(updated);
   }
 
-  // --- Categories / subcategories ---
-
-  function extractCategory(fullPath: string): string {
-    const marker = "\\game\\";
-    const idx = fullPath.indexOf(marker);
-    if (idx === -1) return "other";
-    const afterGame = fullPath.substring(idx + marker.length);
-    return afterGame.split("\\")[0];
-  }
+  // --- Categories / subcategories (backfills are one-time and stay available in the toolbar for now) ---
 
   async function backfillCategories() {
+    if (!currentProject) return;
+    const gm = adapter();
+    if (!gm) return;
     setStatus("Backfilling categories...");
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
-    const distinctFiles = (await db.select("SELECT DISTINCT file_path FROM strings")) as { file_path: string }[];
+    const db = await getDb();
+    const distinctFiles = (await db.select(
+      "SELECT DISTINCT file_path FROM strings WHERE game_id = $1",
+      [currentProject.game_id]
+    )) as { file_path: string }[];
     let done = 0;
     for (const row of distinctFiles) {
-      const category = extractCategory(row.file_path);
+      const category = gm.extractCategory(row.file_path);
       await db.execute("UPDATE strings SET category = $1 WHERE file_path = $2", [category, row.file_path]);
       done++;
       if (done % 50 === 0) setStatus(`Backfilling categories... ${done}/${distinctFiles.length} files`);
@@ -336,23 +326,19 @@ function App() {
     await loadCategories();
   }
 
-  function extractSubcategory(fullPath: string): string {
-    const marker = "\\localization\\";
-    const idx = fullPath.indexOf(marker);
-    if (idx === -1) return "general";
-    const afterLoc = fullPath.substring(idx + marker.length);
-    const parts = afterLoc.split("\\");
-    if (parts.length <= 2) return "general";
-    return parts[1];
-  }
-
   async function backfillSubcategories() {
+    if (!currentProject) return;
+    const gm = adapter();
+    if (!gm) return;
     setStatus("Backfilling subcategories...");
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
-    const distinctFiles = (await db.select("SELECT DISTINCT file_path FROM strings")) as { file_path: string }[];
+    const db = await getDb();
+    const distinctFiles = (await db.select(
+      "SELECT DISTINCT file_path FROM strings WHERE game_id = $1",
+      [currentProject.game_id]
+    )) as { file_path: string }[];
     let done = 0;
     for (const row of distinctFiles) {
-      const subcategory = extractSubcategory(row.file_path);
+      const subcategory = gm.extractSubcategory(row.file_path);
       await db.execute("UPDATE strings SET subcategory = $1 WHERE file_path = $2", [subcategory, row.file_path]);
       done++;
       if (done % 50 === 0) setStatus(`Backfilling subcategories... ${done}/${distinctFiles.length}`);
@@ -362,17 +348,19 @@ function App() {
   }
 
   async function loadCategories() {
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
-    const rows = (await db.select(`
-      SELECT s.category as category, s.subcategory as subcategory,
-             COUNT(*) as total,
-             SUM(CASE WHEN t.status IS NULL OR t.status = 'untranslated' THEN 1 ELSE 0 END) as untranslated
-      FROM strings s
-      LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-      WHERE s.category IS NOT NULL
-      GROUP BY s.category, s.subcategory
-      ORDER BY total DESC
-    `)) as { category: string; subcategory: string | null; total: number; untranslated: number }[];
+    if (!currentProject) return;
+    const db = await getDb();
+    const rows = (await db.select(
+      `SELECT s.category as category, s.subcategory as subcategory,
+              COUNT(*) as total,
+              SUM(CASE WHEN t.status IS NULL OR t.status = 'untranslated' THEN 1 ELSE 0 END) as untranslated
+       FROM strings s
+       LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
+       WHERE s.category IS NOT NULL AND s.game_id = $2
+       GROUP BY s.category, s.subcategory
+       ORDER BY total DESC`,
+      [currentProject.target_language, currentProject.game_id]
+    )) as { category: string; subcategory: string | null; total: number; untranslated: number }[];
 
     const grouped: Record<string, CategoryCount> = {};
     for (const row of rows) {
@@ -402,16 +390,6 @@ function App() {
 
   // --- Mod export ---
 
-  function toModRelativePath(fullPath: string): string | null {
-    const marker = "\\game\\";
-    const idx = fullPath.indexOf(marker);
-    if (idx === -1) return null;
-    const afterGame = fullPath.substring(idx + marker.length);
-    const parts = afterGame.split("\\");
-    const fileName = parts.pop();
-    return [...parts, "replace", fileName].join("\\");
-  }
-
   async function writeTextFileWithBom(path: string, content: string) {
     const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
     const textBytes = new TextEncoder().encode(content);
@@ -422,6 +400,10 @@ function App() {
   }
 
   async function exportMod() {
+    if (!currentProject) return;
+    const gm = adapter();
+    if (!gm) return;
+
     setStatus("Choose a folder to export the mod into...");
     const destFolder = await open({ directory: true, multiple: false });
     if (!destFolder) {
@@ -429,18 +411,19 @@ function App() {
       return;
     }
 
-    const modName = "afrikaans-translation";
-    const modRoot = await join(destFolder as string, modName);
+    const modRoot = await join(destFolder as string, currentProject.mod_name.toLowerCase().replace(/\s+/g, "-"));
 
     setStatus("Gathering translated strings...");
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
+    const db = await getDb();
 
-    const translated = (await db.select(`
-      SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
-      FROM strings s
-      JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-      WHERE t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
-    `)) as { key: string; file_path: string; translated_text: string }[];
+    const translated = (await db.select(
+      `SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
+       FROM strings s
+       JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
+       WHERE t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
+         AND s.game_id = $1 AND t.target_language = $2`,
+      [currentProject.game_id, currentProject.target_language]
+    )) as { key: string; file_path: string; translated_text: string }[];
 
     if (translated.length === 0) {
       setStatus("No confirmed translations to export yet.");
@@ -449,7 +432,7 @@ function App() {
 
     const byFile: Record<string, { key: string; translated_text: string }[]> = {};
     for (const row of translated) {
-      const relPath = toModRelativePath(row.file_path);
+      const relPath = gm.toModRelativePath(row.file_path);
       if (!relPath) continue;
       if (!byFile[relPath]) byFile[relPath] = [];
       byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
@@ -462,7 +445,7 @@ function App() {
       const folderPath = fullOutputPath.substring(0, fullOutputPath.lastIndexOf("\\"));
       await mkdir(folderPath, { recursive: true });
 
-      let fileContent = "l_english:\n";
+      let fileContent = `l_${currentProject.source_language}:\n`;
       for (const entry of entries) {
         const safeText = entry.translated_text.replace(/"/g, '\\"');
         fileContent += ` ${entry.key}: "${safeText}"\n`;
@@ -473,21 +456,7 @@ function App() {
     await mkdir(await join(modRoot, ".metadata"), { recursive: true });
     await writeTextFile(
       await join(modRoot, ".metadata", "metadata.json"),
-      JSON.stringify(
-        {
-          name: "Afrikaans Translation",
-          id: "afrikaans-translation",
-          version: "0.1.0",
-          game_id: "eu5",
-          supported_game_version: "1.3.*",
-          short_description: "Afrikaans translation of Europa Universalis V.",
-          tags: ["Translation"],
-          relationships: [],
-          game_custom_data: {},
-        },
-        null,
-        2
-      )
+      JSON.stringify(gm.buildMetadata(currentProject.mod_name, currentProject.target_language), null, 2)
     );
 
     const placeholderPngBase64 =
@@ -495,23 +464,22 @@ function App() {
     const pngBytes = Uint8Array.from(atob(placeholderPngBase64), (c) => c.charCodeAt(0));
     await writeFile(await join(modRoot, ".metadata", "thumbnail.png"), pngBytes);
 
-    await writeTextFile(
-      await join(modRoot, "descriptor.mod"),
-      `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="Afrikaans Translation"\n`
-    );
+    await writeTextFile(await join(modRoot, "descriptor.mod"), gm.buildDescriptor(currentProject.mod_name));
 
     setStatus(`Export complete. Wrote ${translated.length} strings across ${Object.keys(byFile).length} files to ${modRoot}`);
   }
 
   async function refreshCounts() {
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
-    const result = (await db.select(`
-      SELECT
-        (SELECT COUNT(*) FROM strings) as total,
-        (SELECT COUNT(*) FROM translations WHERE status = 'human-confirmed') as confirmed,
-        (SELECT COUNT(*) FROM translations WHERE status = 'ai-suggested') as ai_draft
-    `)) as { total: number; confirmed: number; ai_draft: number }[];
-    
+    if (!currentProject) return;
+    const db = await getDb();
+    const result = (await db.select(
+      `SELECT
+         (SELECT COUNT(*) FROM strings WHERE game_id = $1) as total,
+         (SELECT COUNT(*) FROM translations WHERE status = 'human-confirmed' AND game_id = $1 AND target_language = $2) as confirmed,
+         (SELECT COUNT(*) FROM translations WHERE status = 'ai-suggested' AND game_id = $1 AND target_language = $2) as ai_draft`,
+      [currentProject.game_id, currentProject.target_language]
+    )) as { total: number; confirmed: number; ai_draft: number }[];
+
     const r = result[0];
     setStatusCounts({
       total: r.total,
@@ -521,42 +489,42 @@ function App() {
     });
   }
 
-  async function addGlossaryTerm() {
-    if (!glossaryEnglish.trim() || !glossaryAfrikaans.trim()) return;
-    const db = await Database.load("sqlite:pdx-afrikaans.db");
-    await db.execute(
-      "INSERT INTO glossary (english_term, afrikaans_term) VALUES ($1, $2)",
-      [glossaryEnglish.trim(), glossaryAfrikaans.trim()]
+  // --- Glossary ---
+
+  async function handleAddGlossaryTerm() {
+    if (!currentProject || !glossaryEnglish.trim() || !glossaryTranslated.trim()) return;
+    await addGlossaryTermDb(
+      glossaryEnglish,
+      glossaryTranslated,
+      glossaryShared ? null : currentProject.game_id,
+      currentProject.target_language
     );
-    setStatus(`Added glossary term: "${glossaryEnglish}" → "${glossaryAfrikaans}"`);
+    setStatus(
+      `Added ${glossaryShared ? "shared" : currentProject.game_id + "-specific"} glossary term: "${glossaryEnglish}" → "${glossaryTranslated}"`
+    );
     setGlossaryEnglish("");
-    setGlossaryAfrikaans("");
+    setGlossaryTranslated("");
   }
 
-  async function aiTranslateRow(row: EditorRow) {
-    setStatus(`Requesting AI translation for ${row.key}...`);
+  // --- AI translation ---
+
+  async function translateAndSave(key: string, gameId: string, sourceText: string): Promise<boolean> {
+    if (!currentProject) return false;
     try {
-      const { text: protectedText, tokens } = protectTokens(row.source_text);
-
-      const db = await Database.load("sqlite:pdx-afrikaans.db");
-      const glossaryRows = (await db.select(
-        "SELECT english_term, afrikaans_term FROM glossary"
-      )) as { english_term: string; afrikaans_term: string }[];
-
-      const matchedTerms = glossaryRows.filter((g) =>
-        row.source_text.toLowerCase().includes(g.english_term.toLowerCase())
-      );
+      const { text: protectedText, tokens } = protectTokens(sourceText);
+      const terms = await loadGlossaryTerms(gameId, currentProject.target_language);
+      const matchedTerms = matchGlossaryTerms(sourceText, terms);
 
       let glossaryInstruction = "";
       if (matchedTerms.length > 0) {
         const lines = matchedTerms
-          .map((t) => `- "${t.english_term}" must be translated as "${t.afrikaans_term}"`)
+          .map((t) => `- "${t.english_term}" must be translated as "${t.translated_term}"`)
           .join("\n");
         glossaryInstruction = `\n\nFollow these mandatory terminology rules:\n${lines}`;
       }
 
       const prompt =
-        `You are a professional English (en) to Afrikaans (af) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Afrikaans grammar, vocabulary, and cultural sensitivities. Produce only the Afrikaans translation, without any additional explanations or commentary.${glossaryInstruction}\n\nPlease translate the following English text into Afrikaans:\n\n${protectedText}`;
+        `You are a professional English (en) to ${currentProject.target_language} translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to grammar, vocabulary, and cultural sensitivities. Produce only the translation, without any additional explanations or commentary.${glossaryInstruction}\n\nPlease translate the following English text:\n\n${protectedText}`;
 
       const response = await fetch("http://localhost:11434/api/chat", {
         method: "POST",
@@ -568,86 +536,147 @@ function App() {
         }),
       });
 
-      if (!response.ok) {
-        setStatus(`AI translation failed: ${response.status} ${response.statusText}`);
-        return;
-      }
+      if (!response.ok) return false;
 
       const data = await response.json();
       const finalTranslation = restoreTokens(data.message.content.trim(), tokens);
+      const db = await getDb();
 
       await db.execute(
-        `INSERT OR REPLACE INTO translations (string_key, game_id, translated_text, status, translated_by, updated_at, flagged)
-         VALUES ($1, $2, $3, 'ai-suggested', $4, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $5 AND game_id = $6), 0))`,
-        [row.key, row.game_id, finalTranslation, "TranslateGemma:4b", row.key, row.game_id]
+        `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged)
+         VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0))`,
+        [key, gameId, currentProject.target_language, finalTranslation, "TranslateGemma:4b", key, gameId, currentProject.target_language]
       );
 
       await db.execute(
-        `INSERT INTO translation_history (string_key, game_id, old_text, new_text, changed_by)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [row.key, row.game_id, row.translated_text ?? "", finalTranslation, "TranslateGemma:4b"]
+        `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [key, gameId, currentProject.target_language, "", finalTranslation, "TranslateGemma:4b"]
       );
 
-      const updated: EditorRow = {
-        ...row,
-        translated_text: finalTranslation,
-        status: "ai-suggested",
-        translated_by: "TranslateGemma:4b",
-      };
-      setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
-      setDrafts((prev) => ({ ...prev, [row.key]: finalTranslation }));
-      if (selectedRow?.key === row.key) setSelectedRow(updated);
-      refreshCounts();
-      setStatus(`AI translated ${row.key}${matchedTerms.length > 0 ? " (glossary applied)" : ""}.`);
-    } catch (err) {
-      setStatus(`AI translation error: ${err}`);
+      return true;
+    } catch {
+      return false;
     }
   }
 
-  function testTokenProtection() {
-    const original = '#trigger_pass @trigger_pass! $TEXT$#!';
-    const { text, tokens } = protectTokens(original);
-    const restored = restoreTokens(text, tokens);
-    setStatus(`Protected: "${text}" | Restored matches original: ${restored === original}`);
+  async function aiTranslateRow(row: EditorRow) {
+    setStatus(`Requesting AI translation for ${row.key}...`);
+    const ok = await translateAndSave(row.key, row.game_id, row.source_text);
+    if (!ok) {
+      setStatus(`AI translation failed for ${row.key}.`);
+      return;
+    }
+    await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+    setStatus(`AI translated ${row.key}.`);
   }
 
-    async function testOllamaConnection() {
-    setStatus("Sending test request to Ollama...");
-    try {
-      const response = await fetch("http://localhost:11434/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "translategemma:4b",
-          messages: [
-            {
-              role: "user",
-              content:
-                "You are a professional English (en) to Afrikaans (af) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Afrikaans grammar, vocabulary, and cultural sensitivities. Produce only the Afrikaans translation, without any additional explanations or commentary. Please translate the following English text into Afrikaans:\n\nHello, welcome to the game.",
-            },
-          ],
-          stream: false,
-        }),
-      });
+  async function batchTranslatePage() {
+    const targets = rows.filter((r) => !r.status || r.status === "untranslated");
+    if (targets.length === 0) {
+      setStatus("No untranslated strings on this page.");
+      return;
+    }
+    setBatchRunning(true);
+    stopRequestedRef.current = false;
+    setBatchProgress({ done: 0, total: targets.length });
 
-      if (!response.ok) {
-        setStatus(`Ollama request failed: ${response.status} ${response.statusText}`);
-        return;
+    for (let i = 0; i < targets.length; i++) {
+      if (stopRequestedRef.current) break;
+      const row = targets[i];
+      setStatus(`Translating page: ${i + 1}/${targets.length} — ${row.key}`);
+      await translateAndSave(row.key, row.game_id, row.source_text);
+      setBatchProgress({ done: i + 1, total: targets.length });
+    }
+
+    setBatchRunning(false);
+    refreshCounts();
+    await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+    setStatus("Page batch complete.");
+  }
+
+  async function batchTranslateOvernight() {
+    if (!currentProject) return;
+    const targetCount = parseInt(overnightCount, 10);
+    if (!targetCount || targetCount <= 0) {
+      setStatus("Enter a valid number of strings to translate.");
+      return;
+    }
+
+    setBatchRunning(true);
+    stopRequestedRef.current = false;
+    setBatchProgress({ done: 0, total: targetCount });
+
+    const db = await getDb();
+    let done = 0;
+    let consecutiveFailures = 0;
+
+    while (done < targetCount && !stopRequestedRef.current) {
+      const next = (await db.select(
+        `SELECT s.key as key, s.game_id as game_id, s.source_text as source_text
+         FROM strings s
+         LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
+         WHERE (t.status IS NULL OR t.status = 'untranslated') AND s.game_id = $2
+         ORDER BY s.file_path, s.key
+         LIMIT 1`,
+        [currentProject.target_language, currentProject.game_id]
+      )) as { key: string; game_id: string; source_text: string }[];
+
+      if (next.length === 0) {
+        setStatus("No more untranslated strings remain — batch finished early.");
+        break;
       }
 
-      const data = await response.json();
-      setStatus(`Ollama responded: "${data.message.content}"`);
-    } catch (err) {
-      setStatus(`Could not reach Ollama: ${err}`);
+      const row = next[0];
+      setStatus(`Overnight batch: ${done + 1}/${targetCount} — ${row.key}`);
+      const ok = await translateAndSave(row.key, row.game_id, row.source_text);
+
+      if (ok) {
+        consecutiveFailures = 0;
+        done++;
+        setBatchProgress({ done, total: targetCount });
+      } else {
+        consecutiveFailures++;
+        if (consecutiveFailures >= 3) {
+          setStatus("Stopped: 3 translations in a row failed — check that Ollama is running.");
+          break;
+        }
+      }
     }
+
+    setBatchRunning(false);
+    refreshCounts();
+    await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+    setStatus(`Overnight batch finished. ${done} strings translated.`);
   }
 
+  function stopBatch() {
+    stopRequestedRef.current = true;
+    setStatus("Stopping batch after current translation finishes...");
+  }
+
+  if (!currentProject) {
     return (
+      <div className="app-shell">
+        <div className="title-bar">
+          <div className="logo-mark" />
+          <span className="app-name">Vertaal</span>
+        </div>
+        <div className="main-content">
+          <p>Loading project...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
     <div className="app-shell">
       <div className="title-bar">
         <div className="logo-mark" />
         <span className="app-name">Vertaal</span>
-        <span className="project-context">— EU5 → Afrikaans</span>
+        <span className="project-context">
+          — {adapter()?.displayName ?? currentProject.game_id} → {currentProject.target_language}
+        </span>
         <div className="title-bar-spacer" />
         <button className="build-mod-button" onClick={exportMod}>
           Build Mod
@@ -662,7 +691,7 @@ function App() {
           onKeyDown={(e) => {
             if (e.key === "Enter") runSearch();
           }}
-          placeholder="Search by key, English, or Afrikaans text..."
+          placeholder="Search by key, English, or translated text..."
           style={{ width: "260px" }}
         />
         <button onClick={runSearch}>Search</button>
@@ -676,12 +705,40 @@ function App() {
         />
         <input
           type="text"
-          value={glossaryAfrikaans}
-          onChange={(e) => setGlossaryAfrikaans(e.target.value)}
-          placeholder="Afrikaans term"
+          value={glossaryTranslated}
+          onChange={(e) => setGlossaryTranslated(e.target.value)}
+          placeholder="Translated term"
           style={{ width: "110px" }}
         />
-        <button onClick={addGlossaryTerm}>Add Glossary Term</button>
+        <label style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
+          <input type="checkbox" checked={glossaryShared} onChange={(e) => setGlossaryShared(e.target.checked)} />
+          {" "}Shared across games
+        </label>
+        <button onClick={handleAddGlossaryTerm}>Add Glossary Term</button>
+
+        <button onClick={batchTranslatePage} disabled={batchRunning}>
+          AI-Translate This Page
+        </button>
+
+        <input
+          type="number"
+          value={overnightCount}
+          onChange={(e) => setOvernightCount(e.target.value)}
+          style={{ width: "80px" }}
+          disabled={batchRunning}
+        />
+        <button onClick={batchTranslateOvernight} disabled={batchRunning}>
+          Run Overnight Batch
+        </button>
+
+        {batchRunning && (
+          <>
+            <span style={{ color: "var(--text-dim)" }}>
+              {batchProgress.done}/{batchProgress.total}
+            </span>
+            <button onClick={stopBatch}>Stop</button>
+          </>
+        )}
 
         <div className="filter-chips">
           <span className="chip">
@@ -701,8 +758,9 @@ function App() {
         <div className="toolbar-spacer" />
 
         <button onClick={importFolder}>Import Folder</button>{" "}
-        <button onClick={testTokenProtection}>Test Token Protection</button>
-       </div>
+        <button onClick={backfillCategories}>Backfill Categories (run once)</button>{" "}
+        <button onClick={backfillSubcategories}>Backfill Subcategories (run once)</button>
+      </div>
 
       <div className="content-columns">
         <div className="sidebar">
@@ -804,7 +862,7 @@ function App() {
                       <div className="row-key" style={{ overflowWrap: "break-word" }}>{row.key}</div>
                       <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>{row.context_label}</div>
                     </div>
-                      <div style={{ color: "var(--text-dim)", overflowWrap: "break-word" }}>{row.source_text}</div>
+                    <div style={{ color: "var(--text-dim)", overflowWrap: "break-word" }}>{row.source_text}</div>
                     <div>
                       <textarea
                         value={drafts[row.key] ?? ""}
@@ -817,21 +875,9 @@ function App() {
                       />
                     </div>
                     <div className="row-actions">
-                                          <div className="row-actions">
                       <button className="action-btn" title="AI translate" onClick={(e) => { e.stopPropagation(); aiTranslateRow(row); }}>
                         AI
                       </button>
-                      <button className="action-btn confirm" title="Confirm" onClick={(e) => { e.stopPropagation(); confirmRow(row); }}>
-                        ✓
-                      </button>
-                      <button
-                        className={row.flagged ? "action-btn flag flagged" : "action-btn flag"}
-                        title="Flag for review"
-                        onClick={(e) => { e.stopPropagation(); toggleFlag(row); }}
-                      >
-                        ⚑
-                      </button>
-                    </div>
                       <button className="action-btn confirm" title="Confirm" onClick={(e) => { e.stopPropagation(); confirmRow(row); }}>
                         ✓
                       </button>

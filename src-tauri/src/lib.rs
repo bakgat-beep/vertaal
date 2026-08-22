@@ -31,10 +31,16 @@ pub fn run() {
             sql: include_str!("../migrations/0004_add_flagged.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
-                tauri_plugin_sql::Migration {
+        tauri_plugin_sql::Migration {
             version: 5,
             description: "dedupe_translations_and_add_unique_constraint",
             sql: include_str!("../migrations/0005_dedupe_translations.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+        tauri_plugin_sql::Migration {
+            version: 6,
+            description: "add_projects_and_multi_language_support",
+            sql: include_str!("../migrations/0006_projects_and_languages.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
     ];
