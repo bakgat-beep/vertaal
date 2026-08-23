@@ -4,6 +4,7 @@ import { getDb } from "./db";
 import type { Project } from "./types";
 import { GAME_ADAPTERS } from "./games";
 import { validateInstallPath } from "./import";
+import { detectInstalledModels, type OllamaModel } from "./ollama";
 
 interface Props {
   onProjectSelected: (project: Project) => void;
@@ -26,8 +27,20 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
   const [checkingPath, setCheckingPath] = useState(false);
   const [modName, setModName] = useState("");
 
+  const [availableModels, setAvailableModels] = useState<OllamaModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [checkingModels, setCheckingModels] = useState(true);
+
   useEffect(() => {
     loadRecentProjects();
+  }, []);
+
+  useEffect(() => {
+    detectInstalledModels().then((models) => {
+      setAvailableModels(models);
+      if (models.length > 0) setSelectedModel(models[0].name);
+      setCheckingModels(false);
+    });
   }, []);
 
   async function loadRecentProjects() {
@@ -66,9 +79,9 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
     const finalModName = modName.trim() || `${effectiveTargetLanguage} Translation`;
 
     await db.execute(
-      `INSERT INTO projects (game_id, source_language, target_language, mod_name, install_path)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [selectedGameId, sourceLanguage, effectiveTargetLanguage, finalModName, installPath]
+      `INSERT INTO projects (game_id, source_language, target_language, mod_name, install_path, ai_model)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [selectedGameId, sourceLanguage, effectiveTargetLanguage, finalModName, installPath, selectedModel || null]
     );
 
     const inserted = (await db.select(
@@ -189,9 +202,24 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
 
         <div className="form-row">
           <div className="form-label">AI assist</div>
-          <select disabled>
-            <option>TranslateGemma:4b (local, detected)</option>
-          </select>
+          <div style={{ flexGrow: 1 }}>
+            {checkingModels ? (
+              <span style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>Checking for local models...</span>
+            ) : availableModels.length > 0 ? (
+              <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
+                {availableModels.map((m) => (
+                  <option key={m.name} value={m.name}>
+                    {m.name} ({m.sizeGb} GB)
+                  </option>
+                ))}
+                <option value="">None — manual translation only</option>
+              </select>
+            ) : (
+              <span style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
+                No TranslateGemma models detected. AI assist will be unavailable — you can still translate manually.
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="welcome-footer">

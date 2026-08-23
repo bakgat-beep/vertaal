@@ -36,3 +36,14 @@ export function restoreTokens(translatedText: string, tokens: string[]): string 
   });
   return result;
 }
+
+// Confirms the translation didn't drop, duplicate, or mangle any protected
+// token placeholders — the one automated check that catches a model breaking
+// game-critical syntax like $VAR$ or [Function] codes.
+export function validateTokensPreserved(translatedText: string, tokenCount: number): boolean {
+  const matches = translatedText.match(/__TOKEN_\d+__/g) ?? [];
+  if (matches.length !== tokenCount) return false;
+
+  const seen = new Set(matches);
+  return seen.size === tokenCount; // catches duplicated tokens too, not just wrong count
+}

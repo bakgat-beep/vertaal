@@ -19,4 +19,5 @@ export interface Project {
   mod_name: string;
   output_path: string | null;
   install_path: string | null;
+  ai_model: string | null;
 }

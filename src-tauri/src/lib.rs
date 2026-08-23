@@ -49,6 +49,18 @@ pub fn run() {
             sql: include_str!("../migrations/0007_install_path.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
+        tauri_plugin_sql::Migration {
+            version: 8,
+            description: "add_project_ai_model",
+            sql: include_str!("../migrations/0008_ai_model.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+        tauri_plugin_sql::Migration {
+            version: 9,
+            description: "add_user_settings",
+            sql: include_str!("../migrations/0009_user_settings.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

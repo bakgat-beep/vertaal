@@ -10,6 +10,7 @@ import type { EditorRow, Project } from "./types";
 import { parseLocFile, protectTokens, restoreTokens } from "./parser";
 import { addGlossaryTerm as addGlossaryTermDb, loadGlossaryTerms, matchGlossaryTerms } from "./glossary";
 import { GAME_ADAPTERS } from "./games";
+import { getContributorName, setContributorName } from "./settings";
 
 type ViewMode = "all" | "untranslated" | "translated" | "search" | "category" | "subcategory";
 
@@ -57,6 +58,9 @@ function App() {
   const [overnightCount, setOvernightCount] = useState("5000");
   const stopRequestedRef = useRef(false);
 
+  const [contributorName, setContributorNameState] = useState<string | null>(null);
+  const [nameInput, setNameInput] = useState("");
+
   const [statusCounts, setStatusCounts] = useState({
     untranslated: 0,
     aiDraft: 0,
@@ -70,6 +74,10 @@ function App() {
     setCurrentProject(project);
     setShowWelcome(false);
   }
+
+  useEffect(() => {
+    getContributorName().then(setContributorNameState);
+  }, []);
 
   useEffect(() => {
     if (!currentProject) return;
@@ -234,13 +242,13 @@ function App() {
     await db.execute(
       `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged)
        VALUES ($1, $2, $3, $4, $5, $6, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $7 AND game_id = $8 AND target_language = $9), 0))`,
-      [row.key, row.game_id, lang, newText, newStatus, "You (local)", row.key, row.game_id, lang]
+      [row.key, row.game_id, lang, newText, newStatus, contributorName, row.key, row.game_id, lang]
     );
 
     await db.execute(
       `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [row.key, row.game_id, lang, row.translated_text ?? "", newText, "You (local)"]
+      [row.key, row.game_id, lang, row.translated_text ?? "", newText, contributorName]
     );
 
     const updated = { ...row, translated_text: newText, status: newStatus };
@@ -254,7 +262,7 @@ function App() {
     await db.execute(
       `UPDATE translations SET status = 'human-confirmed', translated_by = $1, updated_at = datetime('now')
        WHERE string_key = $2 AND game_id = $3 AND target_language = $4`,
-      ["You (local)", row.key, row.game_id, currentProject.target_language]
+      [contributorName, row.key, row.game_id, currentProject.target_language]
     );
     const updated = { ...row, status: "human-confirmed" };
     setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
@@ -275,7 +283,7 @@ function App() {
         currentProject.target_language,
         row.translated_text ?? "",
         row.status ?? "untranslated",
-        row.translated_by ?? "You (local)",
+        row.translated_by ?? contributorName,
         newFlagged,
       ]
     );
@@ -495,6 +503,7 @@ function App() {
 
   async function translateAndSave(key: string, gameId: string, sourceText: string): Promise<boolean> {
     if (!currentProject) return false;
+    if (!currentProject.ai_model) return false;
     try {
       const { text: protectedText, tokens } = protectTokens(sourceText);
       const terms = await loadGlossaryTerms(gameId, currentProject.target_language);
@@ -515,7 +524,7 @@ function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "translategemma:4b",
+          model: currentProject.ai_model,
           messages: [{ role: "user", content: prompt }],
           stream: false,
         }),
@@ -524,19 +533,28 @@ function App() {
       if (!response.ok) return false;
 
       const data = await response.json();
-      const finalTranslation = restoreTokens(data.message.content.trim(), tokens);
+      const rawTranslation = data.message.content.trim();
+
+      if (!validateTokensPreserved(rawTranslation, tokens.length)) {
+        // Model dropped, duplicated, or mangled a protected code — don't trust
+        // this output. Treat it the same as a failed request: no database
+        // write, caller sees false and can flag/report accordingly.
+        return false;
+      }
+
+      const finalTranslation = restoreTokens(rawTranslation, tokens);
       const db = await getDb();
 
       await db.execute(
         `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged)
          VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0))`,
-        [key, gameId, currentProject.target_language, finalTranslation, "TranslateGemma:4b", key, gameId, currentProject.target_language]
+        [key, gameId, currentProject.target_language, finalTranslation, currentProject.ai_model, key, gameId, currentProject.target_language]
       );
 
       await db.execute(
         `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [key, gameId, currentProject.target_language, "", finalTranslation, "TranslateGemma:4b"]
+        [key, gameId, currentProject.target_language, "", finalTranslation, currentProject.ai_model]
       );
 
       return true;
@@ -549,7 +567,7 @@ function App() {
     setStatus(`Requesting AI translation for ${row.key}...`);
     const ok = await translateAndSave(row.key, row.game_id, row.source_text);
     if (!ok) {
-      setStatus(`AI translation failed for ${row.key}.`);
+      setStatus(`AI translation failed or produced invalid output for ${row.key}. Try again or translate manually.`);
       return;
     }
     await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
@@ -638,6 +656,37 @@ function App() {
   function stopBatch() {
     stopRequestedRef.current = true;
     setStatus("Stopping batch after current translation finishes...");
+  }
+
+    if (contributorName === null) {
+    return (
+      <div className="welcome-overlay">
+        <div className="welcome-window">
+          <h1>Welcome to Vertaal</h1>
+          <p style={{ color: "var(--text-dim)" }}>
+            What name should be shown against your translations? This is used to credit your work if this project is ever shared or collaborated on.
+          </p>
+          <input
+            type="text"
+            value={nameInput}
+            onChange={(e) => setNameInput(e.target.value)}
+            placeholder="Your name"
+            style={{ width: "300px" }}
+          />
+          <br /><br />
+          <button
+            className="build-mod-button"
+            onClick={async () => {
+              if (!nameInput.trim()) return;
+              await setContributorName(nameInput.trim());
+              setContributorNameState(nameInput.trim());
+            }}
+          >
+            Continue
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (showWelcome || !currentProject) {
@@ -851,7 +900,11 @@ function App() {
                       />
                     </div>
                     <div className="row-actions">
-                      <button className="action-btn" title="AI translate" onClick={(e) => { e.stopPropagation(); aiTranslateRow(row); }}>
+                      <button
+                        className="action-btn"
+                        title={currentProject.ai_model ? "AI translate" : "No AI model configured for this project"}
+                        disabled={!currentProject.ai_model}
+                        onClick={(e) => { e.stopPropagation(); aiTranslateRow(row); }}>
                         AI
                       </button>
                       <button className="action-btn confirm" title="Confirm" onClick={(e) => { e.stopPropagation(); confirmRow(row); }}>
