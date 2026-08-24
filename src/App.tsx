@@ -94,13 +94,15 @@ function App() {
 
   async function importFolder() {
     if (!currentProject) return;
+    const gm = adapter();
+    if (!gm) return;
     setStatus("Waiting for folder selection...");
     const folderPath = await open({ directory: true, multiple: false, defaultPath: currentProject.install_path ?? undefined });
     if (!folderPath) {
       setStatus("No folder selected.");
       return;
     }
-    setStatus("Scanning folder for localization files...");
+    setStatus("Scanning folder for localization files... (please wait!)");
     const files = await findLocFiles(folderPath as string, currentProject.source_language);
     if (files.length === 0) {
       setStatus(`No _l_${currentProject.source_language}.yml files found in that folder.`);
@@ -118,12 +120,14 @@ function App() {
       const parsed = parseLocFile(content);
       const fileName = filePath.split("\\").pop() ?? filePath;
       const contextLabel = fileName.replace(`_l_${currentProject.source_language}.yml`, "").replace(/_/g, " ");
+      const category = gm.extractCategory(filePath);
+      const subcategory = gm.extractSubcategory(filePath);
       for (const item of parsed) {
         const hash = String(item.text.length) + "-" + item.text.slice(0, 20);
         await db.execute(
-          `INSERT OR REPLACE INTO strings (key, game_id, source_text, source_text_hash, file_path, context_label)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [item.key, currentProject.game_id, item.text, hash, filePath, contextLabel]
+          `INSERT OR REPLACE INTO strings (key, game_id, source_text, source_text_hash, file_path, context_label, category, subcategory)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [item.key, currentProject.game_id, item.text, hash, filePath, contextLabel, category, subcategory]
         );
         totalStrings++;
       }
@@ -133,6 +137,8 @@ function App() {
       [currentProject.game_id]
     )) as { total: number }[];
     setCount(countRows[0].total);
+    await refreshCounts();
+    await loadCategories();
     setStatus(`Import complete. Processed ${files.length} files, ${totalStrings} strings this run.`);
   }
 
@@ -205,6 +211,11 @@ function App() {
     } else {
       loadPage("translated", 0);
     }
+  }
+  
+  function percentComplete(total: number, untranslated: number): number {
+    if (total === 0) return 100;
+    return Math.round(((total - untranslated) / total) * 100);
   }
 
   function runSearch() {
@@ -290,50 +301,6 @@ function App() {
     const updated = { ...row, flagged: newFlagged };
     setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
     if (selectedRow?.key === row.key) setSelectedRow(updated);
-  }
-
-  // --- Categories / subcategories (backfills are one-time and stay available in the toolbar for now) ---
-
-  async function backfillCategories() {
-    if (!currentProject) return;
-    const gm = adapter();
-    if (!gm) return;
-    setStatus("Backfilling categories...");
-    const db = await getDb();
-    const distinctFiles = (await db.select(
-      "SELECT DISTINCT file_path FROM strings WHERE game_id = $1",
-      [currentProject.game_id]
-    )) as { file_path: string }[];
-    let done = 0;
-    for (const row of distinctFiles) {
-      const category = gm.extractCategory(row.file_path);
-      await db.execute("UPDATE strings SET category = $1 WHERE file_path = $2", [category, row.file_path]);
-      done++;
-      if (done % 50 === 0) setStatus(`Backfilling categories... ${done}/${distinctFiles.length} files`);
-    }
-    setStatus(`Category backfill complete. Processed ${distinctFiles.length} files.`);
-    await loadCategories();
-  }
-
-  async function backfillSubcategories() {
-    if (!currentProject) return;
-    const gm = adapter();
-    if (!gm) return;
-    setStatus("Backfilling subcategories...");
-    const db = await getDb();
-    const distinctFiles = (await db.select(
-      "SELECT DISTINCT file_path FROM strings WHERE game_id = $1",
-      [currentProject.game_id]
-    )) as { file_path: string }[];
-    let done = 0;
-    for (const row of distinctFiles) {
-      const subcategory = gm.extractSubcategory(row.file_path);
-      await db.execute("UPDATE strings SET subcategory = $1 WHERE file_path = $2", [subcategory, row.file_path]);
-      done++;
-      if (done % 50 === 0) setStatus(`Backfilling subcategories... ${done}/${distinctFiles.length}`);
-    }
-    setStatus(`Subcategory backfill complete. Processed ${distinctFiles.length} files.`);
-    await loadCategories();
   }
 
   async function loadCategories() {
@@ -783,8 +750,6 @@ function App() {
         <div className="toolbar-spacer" />
 
         <button onClick={importFolder}>Import Folder</button>{" "}
-        <button onClick={backfillCategories}>Backfill Categories (run once)</button>{" "}
-        <button onClick={backfillSubcategories}>Backfill Subcategories (run once)</button>
       </div>
 
       <div className="content-columns">
@@ -812,7 +777,7 @@ function App() {
                   {cat.category.replace(/_/g, " ")}
                 </span>
                 <span className="sidebar-count" style={{ opacity: cat.untranslated === 0 ? 0.4 : 1 }}>
-                  {cat.untranslated.toLocaleString()}
+                  {cat.untranslated.toLocaleString()} left · {percentComplete(cat.total, cat.untranslated)}%
                 </span>
               </div>
 
@@ -826,7 +791,7 @@ function App() {
                   >
                     <span style={{ fontSize: "0.8rem" }}>{sub.subcategory.replace(/_/g, " ")}</span>
                     <span className="sidebar-count" style={{ opacity: sub.untranslated === 0 ? 0.4 : 1 }}>
-                      {sub.untranslated.toLocaleString()}
+                      {sub.untranslated.toLocaleString()} left · {percentComplete(sub.total, sub.untranslated)}%
                     </span>
                   </div>
                 ))}
@@ -836,8 +801,6 @@ function App() {
 
         <div className="editor-column">
           <p style={{ color: "var(--text-dim)" }}>{status}</p>
-          {count !== null && <p style={{ color: "var(--text-dim)" }}>Total strings in database: {count}</p>}
-
           {rows.length > 0 && (
             <div style={{ margin: "0.5rem 0" }}>
               <button

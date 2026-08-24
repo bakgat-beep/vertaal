@@ -13,9 +13,10 @@
     "windows": [
       {
         "title": "Vertaal",
-        "width": 1400,
+        "width": 1800,
         "height": 900,
-        "theme": "Dark"
+        "theme": "Dark",
+        "maximized": true
       }
     ],
     "security": {

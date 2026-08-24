@@ -133,7 +133,6 @@ table {
 }
 
 .toolbar {
-  height: 40px;
   background: var(--bg-panel);
   display: flex;
   align-items: center;
@@ -429,4 +428,24 @@ textarea::placeholder {
   justify-content: space-between;
   align-items: center;
   margin-top: 1.5rem;
+}
+
+.toolbar {
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
+  align-items: center;
+}
+
+.toolbar input[type="text"],
+.toolbar input[type="number"] {
+  flex-shrink: 0;
+}
+
+.toolbar select {
+  flex-shrink: 0;
+}
+
+.toolbar button {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
