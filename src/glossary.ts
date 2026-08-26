@@ -58,3 +58,62 @@ export function matchGlossaryTerms(sourceText: string, terms: GlossaryTerm[]): G
       )
   );
 }
+
+export interface GlossaryRow {
+  id: number;
+  english_term: string;
+  translated_term: string;
+  game_id: string | null;
+  target_language: string;
+}
+
+export async function listGlossaryTerms(gameId: string, targetLanguage: string): Promise<GlossaryRow[]> {
+  const db = await getDb();
+  return (await db.select(
+    `SELECT id, english_term, translated_term, game_id, target_language FROM glossary
+     WHERE target_language = $1 AND (game_id = $2 OR game_id IS NULL)
+     ORDER BY english_term`,
+    [targetLanguage, gameId]
+  )) as GlossaryRow[];
+}
+
+export async function updateGlossaryTerm(
+  id: number,
+  englishTerm: string,
+  translatedTerm: string,
+  gameId: string | null
+) {
+  const db = await getDb();
+  await db.execute(
+    "UPDATE glossary SET english_term = $1, translated_term = $2, game_id = $3 WHERE id = $4",
+    [englishTerm.trim(), translatedTerm.trim(), gameId, id]
+  );
+}
+
+export async function deleteGlossaryTerm(id: number) {
+  const db = await getDb();
+  await db.execute("DELETE FROM glossary WHERE id = $1", [id]);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchCase(sourceOccurrence: string, translated: string): string {
+  if (!sourceOccurrence || !translated) return translated;
+  const firstChar = sourceOccurrence[0];
+  const isUpper = firstChar === firstChar.toUpperCase() && firstChar !== firstChar.toLowerCase();
+  return isUpper
+    ? translated.charAt(0).toUpperCase() + translated.slice(1)
+    : translated.charAt(0).toLowerCase() + translated.slice(1);
+}
+
+export function buildGlossaryInstructions(sourceText: string, matchedTerms: GlossaryTerm[]): string[] {
+  return matchedTerms.map((t) => {
+    const regex = new RegExp(escapeRegExp(t.english_term), "i");
+    const match = sourceText.match(regex);
+    const occurrence = match ? match[0] : t.english_term;
+    const adjusted = matchCase(occurrence, t.translated_term);
+    return `- "${occurrence}" must be translated as "${adjusted}"`;
+  });
+}

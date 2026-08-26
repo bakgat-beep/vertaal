@@ -7,12 +7,18 @@ import { join } from "@tauri-apps/api/path";
 import "./App.css";
 import { getDb } from "./db";
 import type { EditorRow, Project } from "./types";
-import { parseLocFile, protectTokens, restoreTokens } from "./parser";
-import { addGlossaryTerm as addGlossaryTermDb, loadGlossaryTerms, matchGlossaryTerms } from "./glossary";
+import { parseLocFile, protectTokens, restoreTokens, validateTokensPreserved } from "./parser";
+import { loadGlossaryTerms, matchGlossaryTerms, buildGlossaryInstructions } from "./glossary";
 import { GAME_ADAPTERS } from "./games";
 import { getContributorName, setContributorName } from "./settings";
+import { backupDatabase } from "./backup";
+import { exportPortableProjectData } from "./portableExport";
+import GlossaryManager from "./GlossaryManager";
+import { loadHistory, type HistoryEntry } from "./history";
+import { save } from "@tauri-apps/plugin-dialog";
+import { documentDir } from "@tauri-apps/api/path";
 
-type ViewMode = "all" | "untranslated" | "translated" | "search" | "category" | "subcategory";
+type ViewMode = "all" | "untranslated" | "translated"  | "ai-draft" | "search" | "category" | "subcategory";
 
 interface SubcategoryCount {
   subcategory: string;
@@ -49,10 +55,6 @@ function App() {
 
   const [selectedRow, setSelectedRow] = useState<EditorRow | null>(null);
 
-  const [glossaryEnglish, setGlossaryEnglish] = useState("");
-  const [glossaryTranslated, setGlossaryTranslated] = useState("");
-  const [glossaryShared, setGlossaryShared] = useState(false);
-
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
   const [overnightCount, setOvernightCount] = useState("5000");
@@ -66,9 +68,15 @@ function App() {
     aiDraft: 0,
     confirmed: 0,
     total: 0,
+    outdated: 0,
   });
 
   const [showWelcome, setShowWelcome] = useState(true);
+
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const [showGlossaryManager, setShowGlossaryManager] = useState(false);
 
   function handleProjectSelected(project: Project) {
     setCurrentProject(project);
@@ -84,6 +92,11 @@ function App() {
     refreshCounts();
     loadCategories();
   }, [currentProject]);
+
+  useEffect(() => {
+    setShowHistory(false);
+    setHistoryEntries([]);
+  }, [selectedRow?.key]);
 
   function adapter() {
     if (!currentProject) return null;
@@ -153,9 +166,11 @@ function App() {
 
     const baseSelect = `
       SELECT s.key as key, s.game_id as game_id, s.source_text as source_text,
+             s.source_text_hash as source_text_hash,
              s.context_label as context_label, s.file_path as file_path,
              t.translated_text as translated_text, t.status as status,
-             t.flagged as flagged, t.translated_by as translated_by, t.updated_at as updated_at
+             t.flagged as flagged, t.translated_by as translated_by, t.updated_at as updated_at,
+             t.source_hash_at_translation as source_hash_at_translation
       FROM strings s
       LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $__lang__
       WHERE s.game_id = $__game__
@@ -176,6 +191,11 @@ function App() {
         baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
         " AND t.status = 'human-confirmed' ORDER BY t.updated_at DESC LIMIT $3 OFFSET $4";
       batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
+    } else if (mode === "aidraft") {
+      const sql =
+        baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
+        " AND t.status = 'ai-suggested' ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4";
+      batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
     } else if (mode === "search") {
       const likeTerm = `%${searchTerm}%`;
       const sql =
@@ -192,6 +212,11 @@ function App() {
         baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
         " AND s.category = $3 AND s.subcategory = $4 ORDER BY s.file_path, s.key LIMIT $5 OFFSET $6";
       batch = (await db.select(sql, [lang, gameId, category, subcategory, BATCH_SIZE, newOffset])) as EditorRow[];
+    } else if (mode === "outdated") {
+      const sql =
+        baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
+        " AND t.source_hash_at_translation IS NOT NULL AND t.source_hash_at_translation != s.source_text_hash ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4";
+      batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
     }
 
     setRows(batch);
@@ -211,6 +236,13 @@ function App() {
     } else {
       loadPage("translated", 0);
     }
+  }
+
+  function isOutdated(row: EditorRow): boolean {
+    return (
+      row.source_hash_at_translation !== null &&
+      row.source_hash_at_translation !== row.source_text_hash
+    );
   }
   
   function percentComplete(total: number, untranslated: number): number {
@@ -253,7 +285,7 @@ function App() {
     await db.execute(
       `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged)
        VALUES ($1, $2, $3, $4, $5, $6, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $7 AND game_id = $8 AND target_language = $9), 0))`,
-      [row.key, row.game_id, lang, newText, newStatus, contributorName, row.key, row.game_id, lang]
+      [row.key, row.game_id, lang, newText, newStatus, contributorName, row.key, row.game_id, lang, row.source_text_hash]
     );
 
     await db.execute(
@@ -271,11 +303,11 @@ function App() {
     if (!currentProject) return;
     const db = await getDb();
     await db.execute(
-      `UPDATE translations SET status = 'human-confirmed', translated_by = $1, updated_at = datetime('now')
-       WHERE string_key = $2 AND game_id = $3 AND target_language = $4`,
-      [contributorName, row.key, row.game_id, currentProject.target_language]
+      `UPDATE translations SET status = 'human-confirmed', translated_by = $1, updated_at = datetime('now'), source_hash_at_translation = $2
+       WHERE string_key = $3 AND game_id = $4 AND target_language = $5`,
+      [contributorName, row.source_text_hash, row.key, row.game_id, currentProject.target_language]
     );
-    const updated = { ...row, status: "human-confirmed" };
+    const updated = { ...row, status: "human-confirmed", source_hash_at_translation: row.source_text_hash };
     setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
     setSelectedRow(updated);
     refreshCounts();
@@ -344,6 +376,65 @@ function App() {
     });
   }
 
+  async function handleViewHistory() {
+    if (!selectedRow || !currentProject) return;
+    const entries = await loadHistory(selectedRow.key, selectedRow.game_id, currentProject.target_language);
+    setHistoryEntries(entries);
+    setShowHistory(true);
+  }
+
+  async function revertToVersion(text: string) {
+    if (!selectedRow || !currentProject) return;
+    const db = await getDb();
+    const lang = currentProject.target_language;
+
+    await db.execute(
+      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
+       VALUES ($1, $2, $3, $4, 'human-draft', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
+      [selectedRow.key, selectedRow.game_id, lang, text, contributorName, selectedRow.key, selectedRow.game_id, lang, selectedRow.source_text_hash]
+    );
+
+    await db.execute(
+      `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [selectedRow.key, selectedRow.game_id, lang, selectedRow.translated_text ?? "", text, contributorName]
+    );
+
+    await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+    const entries = await loadHistory(selectedRow.key, selectedRow.game_id, lang);
+    setHistoryEntries(entries);
+    setStatus(`Reverted ${selectedRow.key} to a previous version.`);
+  }
+
+  async function handleBackupNow() {
+    const docs = await documentDir();
+    const defaultPath = await join(docs, `vertaal-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.db`);
+    const chosenPath = await save({ defaultPath });
+    if (!chosenPath) return;
+    setStatus("Backing up database...");
+    try {
+      await backupDatabase(chosenPath);
+      setStatus(`Backup saved: ${chosenPath}`);
+    } catch (err) {
+      setStatus(`Backup failed: ${err}`);
+    }
+  }
+
+  async function handleExportData() {
+    if (!currentProject) return;
+    const docs = await documentDir();
+    const defaultPath = await join(docs, `${currentProject.game_id}-${currentProject.target_language}-export.json`);
+    const chosenPath = await save({ defaultPath });
+    if (!chosenPath) return;
+    setStatus("Exporting project data...");
+    try {
+      await exportPortableProjectData(currentProject, chosenPath);
+      setStatus(`Project data exported: ${chosenPath}`);
+    } catch (err) {
+      setStatus(`Export failed: ${err}`);
+    }
+  }
+  
   // --- Mod export ---
 
   async function writeTextFileWithBom(path: string, content: string) {
@@ -436,9 +527,12 @@ function App() {
       `SELECT
          (SELECT COUNT(*) FROM strings WHERE game_id = $1) as total,
          (SELECT COUNT(*) FROM translations WHERE status = 'human-confirmed' AND game_id = $1 AND target_language = $2) as confirmed,
-         (SELECT COUNT(*) FROM translations WHERE status = 'ai-suggested' AND game_id = $1 AND target_language = $2) as ai_draft`,
+         (SELECT COUNT(*) FROM translations WHERE status = 'ai-suggested' AND game_id = $1 AND target_language = $2) as ai_draft,
+         (SELECT COUNT(*) FROM translations t JOIN strings s ON t.string_key = s.key AND t.game_id = s.game_id
+           WHERE t.game_id = $1 AND t.target_language = $2
+           AND t.source_hash_at_translation IS NOT NULL AND t.source_hash_at_translation != s.source_text_hash) as outdated`,
       [currentProject.game_id, currentProject.target_language]
-    )) as { total: number; confirmed: number; ai_draft: number }[];
+    )) as { total: number; confirmed: number; ai_draft: number; outdated: number }[];
 
     const r = result[0];
     setStatusCounts({
@@ -446,24 +540,8 @@ function App() {
       confirmed: r.confirmed,
       aiDraft: r.ai_draft,
       untranslated: r.total - r.confirmed - r.ai_draft,
+      outdated: r.outdated,
     });
-  }
-
-  // --- Glossary ---
-
-  async function handleAddGlossaryTerm() {
-    if (!currentProject || !glossaryEnglish.trim() || !glossaryTranslated.trim()) return;
-    await addGlossaryTermDb(
-      glossaryEnglish,
-      glossaryTranslated,
-      glossaryShared ? null : currentProject.game_id,
-      currentProject.target_language
-    );
-    setStatus(
-      `Added ${glossaryShared ? "shared" : currentProject.game_id + "-specific"} glossary term: "${glossaryEnglish}" → "${glossaryTranslated}"`
-    );
-    setGlossaryEnglish("");
-    setGlossaryTranslated("");
   }
 
   // --- AI translation ---
@@ -478,9 +556,7 @@ function App() {
 
       let glossaryInstruction = "";
       if (matchedTerms.length > 0) {
-        const lines = matchedTerms
-          .map((t) => `- "${t.english_term}" must be translated as "${t.translated_term}"`)
-          .join("\n");
+        const lines = buildGlossaryInstructions(sourceText, matchedTerms).join("\n");
         glossaryInstruction = `\n\nFollow these mandatory terminology rules:\n${lines}`;
       }
 
@@ -512,11 +588,17 @@ function App() {
       const finalTranslation = restoreTokens(rawTranslation, tokens);
       const db = await getDb();
 
+      const currentHashRow = (await db.select(
+        "SELECT source_text_hash FROM strings WHERE key = $1 AND game_id = $2",
+        [key, gameId]
+      )) as { source_text_hash: string }[];
+      const currentHash = currentHashRow[0]?.source_text_hash ?? null;
+
       await db.execute(
-        `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged)
-         VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0))`,
-        [key, gameId, currentProject.target_language, finalTranslation, currentProject.ai_model, key, gameId, currentProject.target_language]
-      );
+        `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
+         VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
+        [key, gameId, currentProject.target_language, finalTranslation, currentProject.ai_model, key, gameId, currentProject.target_language, currentHash]
+      );      
 
       await db.execute(
         `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
@@ -564,6 +646,20 @@ function App() {
     await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
     setStatus("Page batch complete.");
   }
+  
+  async function handleBackupNow() {
+    const docs = await documentDir();
+    const defaultPath = await join(docs, `vertaal-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.db`);
+    const chosenPath = await save({ defaultPath });
+    if (!chosenPath) return;
+    setStatus("Backing up database...");
+    try {
+      await backupDatabase(chosenPath);
+      setStatus(`Backup saved: ${chosenPath}`);
+    } catch (err) {
+      setStatus(`Backup failed: ${err}`);
+    }
+  }
 
   async function batchTranslateOvernight() {
     if (!currentProject) return;
@@ -571,6 +667,12 @@ function App() {
     if (!targetCount || targetCount <= 0) {
       setStatus("Enter a valid number of strings to translate.");
       return;
+    }
+    setStatus("Backing up database before starting...");
+    try {
+      await backupDatabase();
+    } catch (err) {
+      setStatus(`Warning: backup failed (${err}). Continuing anyway.`);
     }
 
     setBatchRunning(true);
@@ -618,6 +720,47 @@ function App() {
     refreshCounts();
     await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
     setStatus(`Overnight batch finished. ${done} strings translated.`);
+  }
+
+  async function batchRerunAIUnconfirmed() {
+    if (!currentProject) return;
+    setBatchRunning(true);
+    stopRequestedRef.current = false;
+
+    const db = await getDb();
+    const targets = (await db.select(
+      `SELECT s.key as key, s.game_id as game_id, s.source_text as source_text
+       FROM strings s
+       JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
+       WHERE t.status = 'ai-suggested' AND s.game_id = $2`,
+      [currentProject.target_language, currentProject.game_id]
+    )) as { key: string; game_id: string; source_text: string }[];
+
+    setBatchProgress({ done: 0, total: targets.length });
+    let done = 0;
+    let consecutiveFailures = 0;
+
+    for (const row of targets) {
+      if (stopRequestedRef.current) break;
+      setStatus(`Re-running AI: ${done + 1}/${targets.length} — ${row.key}`);
+      const ok = await translateAndSave(row.key, row.game_id, row.source_text);
+      if (ok) {
+        consecutiveFailures = 0;
+        done++;
+        setBatchProgress({ done, total: targets.length });
+      } else {
+        consecutiveFailures++;
+        if (consecutiveFailures >= 3) {
+          setStatus("Stopped: 3 failures in a row.");
+          break;
+        }
+      }
+    }
+
+    setBatchRunning(false);
+    refreshCounts();
+    await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+    setStatus(`Re-run complete. ${done} strings re-translated.`);
   }
 
   function stopBatch() {
@@ -688,25 +831,7 @@ function App() {
         />
         <button onClick={runSearch}>Search</button>
 
-        <input
-          type="text"
-          value={glossaryEnglish}
-          onChange={(e) => setGlossaryEnglish(e.target.value)}
-          placeholder="English term"
-          style={{ width: "110px" }}
-        />
-        <input
-          type="text"
-          value={glossaryTranslated}
-          onChange={(e) => setGlossaryTranslated(e.target.value)}
-          placeholder="Translated term"
-          style={{ width: "110px" }}
-        />
-        <label style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
-          <input type="checkbox" checked={glossaryShared} onChange={(e) => setGlossaryShared(e.target.checked)} />
-          {" "}Shared across games
-        </label>
-        <button onClick={handleAddGlossaryTerm}>Add Glossary Term</button>
+        <button onClick={() => setShowGlossaryManager(true)}>Manage Glossary</button>
 
         <button onClick={batchTranslatePage} disabled={batchRunning}>
           AI-Translate This Page
@@ -722,6 +847,9 @@ function App() {
         <button onClick={batchTranslateOvernight} disabled={batchRunning}>
           Run Overnight Batch
         </button>
+        <button onClick={batchRerunAIUnconfirmed} disabled={batchRunning}>
+          Re-run AI on Unconfirmed
+        </button>
 
         {batchRunning && (
           <>
@@ -732,23 +860,10 @@ function App() {
           </>
         )}
 
-        <div className="filter-chips">
-          <span className="chip">
-            <span className="chip-dot" style={{ background: "var(--status-untranslated)" }} />
-            Untranslated
-          </span>
-          <span className="chip">
-            <span className="chip-dot" style={{ background: "var(--status-ai-draft)" }} />
-            AI draft
-          </span>
-          <span className="chip">
-            <span className="chip-dot" style={{ background: "var(--status-confirmed)" }} />
-            Confirmed
-          </span>
-        </div>
-
         <div className="toolbar-spacer" />
 
+        <button onClick={handleBackupNow}>Backup Now</button>
+        <button onClick={handleExportData}>Export Project Data (JSON)</button>
         <button onClick={importFolder}>Import Folder</button>{" "}
       </div>
 
@@ -762,9 +877,21 @@ function App() {
             <span>Untranslated</span>
             <span className="sidebar-count">{statusCounts.untranslated.toLocaleString()}</span>
           </div>
+          <div className="sidebar-item" onClick={() => loadPage("aidraft", 0)}>
+            <span>AI Draft</span>
+            <span className="sidebar-count" style={{ opacity: statusCounts.aiDraft === 0 ? 0.4 : 1 }}>
+              {statusCounts.aiDraft.toLocaleString()}
+            </span>
+          </div>
           <div className="sidebar-item" onClick={toggleTranslatedView}>
             <span>Confirmed</span>
             <span className="sidebar-count">{statusCounts.confirmed.toLocaleString()}</span>
+          </div>
+          <div className="sidebar-item" onClick={() => loadPage("outdated", 0)}>
+            <span>⚠ Patch Changed</span>
+            <span className="sidebar-count" style={{ opacity: statusCounts.outdated === 0 ? 0.4 : 1 }}>
+              {statusCounts.outdated.toLocaleString()}
+            </span>
           </div>
 
           <div style={{ height: "1px", background: "var(--border)", margin: "0.6rem 0" }} />
@@ -830,6 +957,7 @@ function App() {
                     : row.status === "ai-suggested" || row.status === "human-draft"
                     ? "var(--status-ai-draft)"
                     : "var(--status-untranslated)";
+                const outdated = isOutdated(row);
                 const isSelected = selectedRow?.key === row.key;
 
                 return (
@@ -840,7 +968,7 @@ function App() {
                     style={{
                       display: "grid",
                       gridTemplateColumns: "minmax(0, 10%) minmax(0, 30%) minmax(0, 50%) minmax(0, 10%)",
-                      borderLeft: `4px solid ${barColor}`,
+                      borderLeft: outdated ? "4px solid #e0a04c" : `4px solid ${barColor}`,
                       borderBottom: "1px solid var(--border)",
                       padding: "0.5rem",
                       gap: "0.5rem",
@@ -848,6 +976,7 @@ function App() {
                   >
                     <div style={{ overflowWrap: "break-word", minWidth: 0 }}>
                       <div className="row-key" style={{ overflowWrap: "break-word" }}>{row.key}</div>
+                      {outdated && <div style={{ color: "#e0a04c", fontSize: "0.7rem" }}>⚠ source changed</div>}
                       <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>{row.context_label}</div>
                     </div>
                     <div style={{ color: "var(--text-dim)", overflowWrap: "break-word" }}>{row.source_text}</div>
@@ -907,6 +1036,10 @@ function App() {
                       ? "Draft (unconfirmed)"
                       : "Untranslated"}
                   </p>
+                  {selectedRow.source_hash_at_translation !== null &&
+                    selectedRow.source_hash_at_translation !== selectedRow.source_text_hash && (
+                      <p style={{ color: "#e0a04c" }}>⚠ Source text changed since this was translated</p>
+                    )}                  
                   {selectedRow.translated_by && (
                     <p>
                       <strong>Last edited by:</strong> {selectedRow.translated_by}
@@ -924,6 +1057,32 @@ function App() {
                   <p style={{ fontSize: "0.75rem", wordBreak: "break-all" }}>
                     <strong>Source file:</strong> {selectedRow.file_path}
                   </p>
+                  <button onClick={handleViewHistory} style={{ marginTop: "0.5rem" }}>
+                    View History for {selectedRow.key}
+                  </button>
+                  {showHistory && (
+                    <div style={{ marginTop: "0.5rem" }}>
+                      {historyEntries.length === 0 && <p style={{ fontSize: "0.8rem" }}>No history yet.</p>}
+                      {historyEntries.map((h) => (
+                        <div
+                          key={h.id}
+                          style={{
+                            borderTop: "1px solid var(--border)",
+                            padding: "0.4rem 0",
+                            fontSize: "0.8rem",
+                          }}
+                        >
+                          <div style={{ color: "var(--text-dim)" }}>
+                            {h.changed_by ?? "unknown"} — {h.changed_at}
+                          </div>
+                          <div>{h.new_text || <em>(cleared)</em>}</div>
+                          <button onClick={() => revertToVersion(h.new_text)} style={{ marginTop: "0.2rem" }}>
+                            Restore this version
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </>
               ) : (
                 <p>Select a row to see details here.</p>
@@ -948,6 +1107,13 @@ function App() {
         </span>
         <span>{statusCounts.total.toLocaleString()} total strings</span>
       </div>
+      {showGlossaryManager && currentProject && (
+        <GlossaryManager
+          gameId={currentProject.game_id}
+          targetLanguage={currentProject.target_language}
+          onClose={() => setShowGlossaryManager(false)}
+        />
+      )}
     </div>
   );
 }

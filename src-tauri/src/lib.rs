@@ -61,6 +61,12 @@ pub fn run() {
             sql: include_str!("../migrations/0009_user_settings.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
+        tauri_plugin_sql::Migration {
+            version: 10,
+            description: "add_patch_diffing_hash_tracking",
+            sql: include_str!("../migrations/0010_patch_diffing.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
