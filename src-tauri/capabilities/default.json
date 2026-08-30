@@ -19,9 +19,20 @@
     "fs:allow-copy-file",
     "fs:allow-remove",
     "fs:allow-mkdir",
+    
     {
         "identifier": "fs:scope",
         "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "run-git",
+          "cmd": "git",
+          "args": true
+        }
+      ]
     },
     "fs:default"
   ]

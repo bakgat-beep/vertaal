@@ -21,4 +21,36 @@ export interface Project {
   output_path: string | null;
   install_path: string | null;
   ai_model: string | null;
+  translation_provider_id: string | null;
+}
+export interface TranslationRequest {
+  text: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  glossaryInstruction?: string; // pre-built, provider-agnostic instruction text
+}
+
+export interface TranslationResult {
+  translatedText: string;
+  raw?: unknown; // provider's original response, kept for debugging
+}
+
+export interface TranslationProvider {
+  id: string;               // "ollama", "deepl", "openai-compatible", etc.
+  displayName: string;
+  isLocal: boolean;
+  supportsGlossary: boolean;
+  supportsBatch: boolean;
+
+  translate(request: TranslationRequest, config: ProviderConfig): Promise<TranslationResult>;
+  detectAvailability?(config: ProviderConfig): Promise<boolean>; // e.g. "is Ollama running", "is the API key valid"
+  listModels?(config: ProviderConfig): Promise<string[]>;
+}
+
+// What a project stores about how it's configured to use a given provider.
+export interface ProviderConfig {
+  providerId: string;
+  model: string | null;
+  apiKey: string | null;   // encrypted at rest, same approach as the GitHub token
+  baseUrl: string | null;  // for self-hosted/OpenAI-compatible endpoints
 }

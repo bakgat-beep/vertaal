@@ -27,12 +27,7 @@ interface PortableProjectExport {
   glossary: PortableGlossaryTerm[];
 }
 
-// A neutral, git-diffable snapshot of a project's translation work — not tied
-// to our SQLite schema. This is the foundation for future collaboration:
-// syncing THIS file (rather than the database itself) is what will let
-// multiple people merge work through something like git, since a plain JSON
-// file diffs and merges cleanly where a SQLite binary file does not.
-export async function exportPortableProjectData(project: Project): Promise<string> {
+export async function exportPortableProjectData(project: Project, destPath?: string): Promise<string> {
   const db = await getDb();
 
   const translations = (await db.select(
@@ -68,12 +63,13 @@ export async function exportPortableProjectData(project: Project): Promise<strin
     glossary,
   };
 
-  const finalPath = destPath ?? (await (async () => {
+  let finalPath = destPath;
+  if (!finalPath) {
     const dataDir = await appDataDir();
     const exportsDir = await join(dataDir, "exports");
     await mkdir(exportsDir, { recursive: true });
-    return await join(exportsDir, `${project.game_id}-${project.target_language}-export.json`);
-  })());
+    finalPath = await join(exportsDir, `${project.game_id}-${project.target_language}-vertaal-export.json`);
+  }
 
   await writeTextFile(finalPath, JSON.stringify(payload, null, 2));
   return finalPath;

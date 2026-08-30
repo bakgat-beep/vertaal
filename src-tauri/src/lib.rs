@@ -67,14 +67,33 @@ pub fn run() {
             sql: include_str!("../migrations/0010_patch_diffing.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
+        tauri_plugin_sql::Migration {
+            version: 11,
+            description: "add_git_collaboration_fields",
+            sql: include_str!("../migrations/0011_git_collaboration.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+        tauri_plugin_sql::Migration {
+            version: 12,
+            description: "add_github_token",
+            sql: include_str!("../migrations/0012_github_token.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+        tauri_plugin_sql::Migration {
+            version: 13,
+            description: "add_translation_providers",
+            sql: include_str!("../migrations/0013_translation_providers.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
-                .add_migrations("sqlite:pdx-afrikaans.db", migrations)
+                .add_migrations("sqlite:vertaal.db", migrations)
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())

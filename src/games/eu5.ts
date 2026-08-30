@@ -1,10 +1,6 @@
 import { join, documentDir } from "@tauri-apps/api/path";
 import type { GameAdapter } from "./types";
 
-// A best-guess default Steam install location, used to pre-fill the folder
-// picker so most users don't have to hunt for it. Not guaranteed correct —
-// Steam libraries can live on any drive — so this is a starting point, not
-// automatic detection.
 export const EU5_DEFAULT_INSTALL_GUESS =
   "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Europa Universalis V\\game";
 

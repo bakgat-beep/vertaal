@@ -17,6 +17,10 @@ import GlossaryManager from "./GlossaryManager";
 import { loadHistory, type HistoryEntry } from "./history";
 import { save } from "@tauri-apps/plugin-dialog";
 import { documentDir } from "@tauri-apps/api/path";
+import { checkGitAvailable } from "./git";
+import CollaborationPanel from "./CollaborationPanel";
+import { TRANSLATION_PROVIDERS } from "./providers";
+import { getProviderCredentials } from "./providers/credentials.ts";
 
 type ViewMode = "all" | "untranslated" | "translated"  | "ai-draft" | "search" | "category" | "subcategory";
 
@@ -77,6 +81,8 @@ function App() {
   const [showHistory, setShowHistory] = useState(false);
 
   const [showGlossaryManager, setShowGlossaryManager] = useState(false);
+
+  const [showCollaboration, setShowCollaboration] = useState(false);
 
   function handleProjectSelected(project: Project) {
     setCurrentProject(project);
@@ -546,46 +552,44 @@ function App() {
 
   // --- AI translation ---
 
-  async function translateAndSave(key: string, gameId: string, sourceText: string): Promise<boolean> {
-    if (!currentProject) return false;
-    if (!currentProject.ai_model) return false;
+  async function translateAndSave(key: string, gameId: string, sourceText: string): Promise<{ ok: boolean; error?: string }> {
+    if (!currentProject) return { ok: false, error: "No project loaded." };
+    if (!currentProject.ai_model) return { ok: false, error: "No AI model configured for this project." };
     try {
       const { text: protectedText, tokens } = protectTokens(sourceText);
       const terms = await loadGlossaryTerms(gameId, currentProject.target_language);
       const matchedTerms = matchGlossaryTerms(sourceText, terms);
+      const glossaryInstruction =
+        matchedTerms.length > 0 ? buildGlossaryInstructions(sourceText, matchedTerms).join("\n") : undefined;
 
-      let glossaryInstruction = "";
-      if (matchedTerms.length > 0) {
-        const lines = buildGlossaryInstructions(sourceText, matchedTerms).join("\n");
-        glossaryInstruction = `\n\nFollow these mandatory terminology rules:\n${lines}`;
+      const provider = TRANSLATION_PROVIDERS[currentProject.translation_provider_id ?? "ollama"];
+      if (!provider) {
+        return { ok: false, error: `No translation provider registered for "${currentProject.translation_provider_id}".` };
       }
 
-      const prompt =
-        `You are a professional English (en) to ${currentProject.target_language} translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to grammar, vocabulary, and cultural sensitivities. Produce only the translation, without any additional explanations or commentary.${glossaryInstruction}\n\nPlease translate the following English text:\n\n${protectedText}`;
+      const credentials = await getProviderCredentials(provider.id);
 
-      const response = await fetch("http://localhost:11434/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: currentProject.ai_model,
-          messages: [{ role: "user", content: prompt }],
-          stream: false,
-        }),
-      });
-
-      if (!response.ok) return false;
-
-      const data = await response.json();
-      const rawTranslation = data.message.content.trim();
-
-      if (!validateTokensPreserved(rawTranslation, tokens.length)) {
-        // Model dropped, duplicated, or mangled a protected code — don't trust
-        // this output. Treat it the same as a failed request: no database
-        // write, caller sees false and can flag/report accordingly.
-        return false;
+      let rawTranslation: string;
+      try {
+        const result = await provider.translate(
+          {
+            text: protectedText,
+            sourceLanguage: currentProject.source_language,
+            targetLanguage: currentProject.target_language,
+            glossaryInstruction,
+          },
+          {
+            providerId: provider.id,
+            model: currentProject.ai_model,
+            apiKey: credentials.apiKey,
+            baseUrl: credentials.baseUrl,
+          }
+        );
+        rawTranslation = result.translatedText.trim();
+      } catch (err) {
+        return { ok: false, error: `Provider error: ${err}` };
       }
 
-      const finalTranslation = restoreTokens(rawTranslation, tokens);
       const db = await getDb();
 
       const currentHashRow = (await db.select(
@@ -594,11 +598,22 @@ function App() {
       )) as { source_text_hash: string }[];
       const currentHash = currentHashRow[0]?.source_text_hash ?? null;
 
+      if (!validateTokensPreserved(rawTranslation, tokens.length)) {
+        await db.execute(
+          `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
+           VALUES ($1, $2, $3, '', 'untranslated', $4, datetime('now'), 1, $5)`,
+          [key, gameId, currentProject.target_language, currentProject.ai_model, currentHash]
+        );
+        return { ok: false, error: "AI response did not preserve required game codes/tokens — flagged for manual review." };
+      }
+
+      const finalTranslation = restoreTokens(rawTranslation, tokens);
+
       await db.execute(
         `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
          VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
         [key, gameId, currentProject.target_language, finalTranslation, currentProject.ai_model, key, gameId, currentProject.target_language, currentHash]
-      );      
+      );
 
       await db.execute(
         `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
@@ -606,17 +621,17 @@ function App() {
         [key, gameId, currentProject.target_language, "", finalTranslation, currentProject.ai_model]
       );
 
-      return true;
-    } catch {
-      return false;
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: `Unexpected error: ${err}` };
     }
   }
 
   async function aiTranslateRow(row: EditorRow) {
     setStatus(`Requesting AI translation for ${row.key}...`);
-    const ok = await translateAndSave(row.key, row.game_id, row.source_text);
-    if (!ok) {
-      setStatus(`AI translation failed or produced invalid output for ${row.key}. Try again or translate manually.`);
+    const result = await translateAndSave(row.key, row.game_id, row.source_text);
+    if (!result.ok) {
+      setStatus(`AI translation failed for ${row.key}: ${result.error ?? "unknown error"}`);
       return;
     }
     await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
@@ -624,7 +639,7 @@ function App() {
   }
 
   async function batchTranslatePage() {
-    const targets = rows.filter((r) => !r.status || r.status === "untranslated");
+    const targets = rows.filter((r) => (!r.status || r.status === "untranslated") && !r.flagged);
     if (targets.length === 0) {
       setStatus("No untranslated strings on this page.");
       return;
@@ -633,18 +648,27 @@ function App() {
     stopRequestedRef.current = false;
     setBatchProgress({ done: 0, total: targets.length });
 
+    let succeeded = 0;
+    let lastError = "";
+
     for (let i = 0; i < targets.length; i++) {
       if (stopRequestedRef.current) break;
       const row = targets[i];
       setStatus(`Translating page: ${i + 1}/${targets.length} — ${row.key}`);
-      await translateAndSave(row.key, row.game_id, row.source_text);
+      const result = await translateAndSave(row.key, row.game_id, row.source_text);
+      if (result.ok) succeeded++;
+      else lastError = result.error ?? "unknown error";
       setBatchProgress({ done: i + 1, total: targets.length });
     }
 
     setBatchRunning(false);
     refreshCounts();
     await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
-    setStatus("Page batch complete.");
+    setStatus(
+      succeeded === targets.length
+        ? `Page batch complete. ${succeeded} translated.`
+        : `Page batch finished: ${succeeded}/${targets.length} translated. Last error: ${lastError}`
+    );
   }
   
   async function handleBackupNow() {
@@ -659,6 +683,11 @@ function App() {
     } catch (err) {
       setStatus(`Backup failed: ${err}`);
     }
+  }
+
+  async function testGit() {
+    const version = await checkGitAvailable();
+    setStatus(version ? `Git detected: ${version}` : "Git not found or not runnable from the app.");
   }
 
   async function batchTranslateOvernight() {
@@ -688,7 +717,7 @@ function App() {
         `SELECT s.key as key, s.game_id as game_id, s.source_text as source_text
          FROM strings s
          LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
-         WHERE (t.status IS NULL OR t.status = 'untranslated') AND s.game_id = $2
+         WHERE (t.status IS NULL OR t.status = 'untranslated') AND (t.flagged IS NULL OR t.flagged = 0) AND s.game_id = $2
          ORDER BY s.file_path, s.key
          LIMIT 1`,
         [currentProject.target_language, currentProject.game_id]
@@ -701,21 +730,20 @@ function App() {
 
       const row = next[0];
       setStatus(`Overnight batch: ${done + 1}/${targetCount} — ${row.key}`);
-      const ok = await translateAndSave(row.key, row.game_id, row.source_text);
+      const result = await translateAndSave(row.key, row.game_id, row.source_text);
 
-      if (ok) {
+      if (result.ok) {
         consecutiveFailures = 0;
         done++;
         setBatchProgress({ done, total: targetCount });
       } else {
         consecutiveFailures++;
         if (consecutiveFailures >= 3) {
-          setStatus("Stopped: 3 translations in a row failed — check that Ollama is running.");
+          setStatus(`Stopped: 3 translations in a row failed. Last error: ${result.error ?? "unknown"}`);
           break;
         }
       }
     }
-
     setBatchRunning(false);
     refreshCounts();
     await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
@@ -865,6 +893,7 @@ function App() {
         <button onClick={handleBackupNow}>Backup Now</button>
         <button onClick={handleExportData}>Export Project Data (JSON)</button>
         <button onClick={importFolder}>Import Folder</button>{" "}
+        <button onClick={() => setShowCollaboration(true)}>Collaboration</button>
       </div>
 
       <div className="content-columns">
@@ -927,7 +956,6 @@ function App() {
         </div>
 
         <div className="editor-column">
-          <p style={{ color: "var(--text-dim)" }}>{status}</p>
           {rows.length > 0 && (
             <div style={{ margin: "0.5rem 0" }}>
               <button
@@ -1093,25 +1121,40 @@ function App() {
       </div>
 
       <div className="status-bar">
-        <span>
-          <span className="status-dot" style={{ background: "var(--status-untranslated)" }} />
-          {statusCounts.untranslated.toLocaleString()} untranslated
-        </span>
-        <span>
-          <span className="status-dot" style={{ background: "var(--status-ai-draft)" }} />
-          {statusCounts.aiDraft.toLocaleString()} AI draft
-        </span>
-        <span>
-          <span className="status-dot" style={{ background: "var(--status-confirmed)" }} />
-          {statusCounts.confirmed.toLocaleString()} confirmed
-        </span>
-        <span>{statusCounts.total.toLocaleString()} total strings</span>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{status}</span>
+        <div style={{ display: "flex", gap: "1.2rem", flexShrink: 0 }}>
+          <span>
+            <span className="status-dot" style={{ background: "var(--status-untranslated)" }} />
+            {statusCounts.untranslated.toLocaleString()} untranslated
+          </span>
+          <span>
+            <span className="status-dot" style={{ background: "var(--status-ai-draft)" }} />
+            {statusCounts.aiDraft.toLocaleString()} AI draft
+          </span>
+          <span>
+            <span className="status-dot" style={{ background: "var(--status-confirmed)" }} />
+            {statusCounts.confirmed.toLocaleString()} confirmed
+          </span>
+          <span>{statusCounts.total.toLocaleString()} total strings</span>
+        </div>
       </div>
       {showGlossaryManager && currentProject && (
         <GlossaryManager
           gameId={currentProject.game_id}
           targetLanguage={currentProject.target_language}
           onClose={() => setShowGlossaryManager(false)}
+        />
+      )}
+      {showCollaboration && currentProject && (
+        <CollaborationPanel
+          project={currentProject}
+          onProjectUpdated={(p) => setCurrentProject(p)}
+          onDataChanged={async () => {
+            await refreshCounts();
+            await loadCategories();
+            await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+          }}
+          onClose={() => setShowCollaboration(false)}
         />
       )}
     </div>

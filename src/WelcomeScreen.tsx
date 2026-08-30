@@ -79,9 +79,9 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
     const finalModName = modName.trim() || `${effectiveTargetLanguage} Translation`;
 
     await db.execute(
-      `INSERT INTO projects (game_id, source_language, target_language, mod_name, install_path, ai_model)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [selectedGameId, sourceLanguage, effectiveTargetLanguage, finalModName, installPath, selectedModel || null]
+      `INSERT INTO projects (game_id, source_language, target_language, mod_name, install_path, ai_model, translation_provider_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [selectedGameId, sourceLanguage, effectiveTargetLanguage, finalModName, installPath, selectedModel || null, "ollama"]
     );
 
     const inserted = (await db.select(
