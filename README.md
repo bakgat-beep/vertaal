@@ -33,25 +33,35 @@ Vertaal helps you translate a Paradox grand strategy game — or a mod for one �
 - **Git/GitHub collaboration**, or a lightweight JSON export/import for sharing progress without Git
 - **Full backup/restore** for your whole project database
 
+## Setting up translation providers
+
+Vertaal works fully offline with a free local AI model, or with several cloud translation services. See [docs/PROVIDERS.md](docs/PROVIDERS.md) for setup instructions and honest notes on each option's limitations.
+
 ## Screenshots
 
 *(Coming soon.)*
 
 ## Installing (for translators / beta testers)
 
-There's no pre-built installer yet, so you'll need to build it yourself:
+Download the latest installer from the [Releases page](https://github.com/bakgat-beep/vertaal/releases) — no coding knowledge or setup required, just run it like any other Windows installer.
+
+> **Note:** the installer isn't code-signed (that requires a paid certificate), so Windows SmartScreen will likely show an "Unknown publisher" warning the first time you run it. Click "More info" → "Run anyway." This is normal for small independent tools and not a sign of a problem.
+
+Setting up your first translation provider (AI assist) is covered in [docs/PROVIDERS.md](docs/PROVIDERS.md).
+
+### Building from source instead
+
+If you'd rather build it yourself, or want to help develop it:
 
 1. Install [Node.js](https://nodejs.org/) (LTS) and the [Rust toolchain](https://www.rust-lang.org/tools/install)
 2. Install the [Tauri prerequisites for Windows](https://tauri.app/start/prerequisites/) (mainly the WebView2 runtime and the Visual Studio C++ Build Tools — most Windows 10/11 machines already have WebView2)
 3. Clone the repo:
-git clone https://github.com/bakgat-beep/vertaal.git
-cd vertaal
-
+  -   git clone https://github.com/bakgat-beep/vertaal.git
+  -   cd vertaal
 4. Install dependencies and run it:
-
-  npm install
-  npm run tauri dev
-
+  -   npm install
+  -   npm run tauri dev
+See [CONTRIBUTING.md](CONTRIBUTING.md) for more on the codebase itself.
 
 ## Building a distributable app
 
