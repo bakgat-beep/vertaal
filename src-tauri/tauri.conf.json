@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "pdx-afrikaans",
+  "productName": "Vertaal",
   "version": "0.1.0",
   "identifier": "com.michi.pdx-afrikaans",
   "build": {
