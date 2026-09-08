@@ -44,3 +44,33 @@ There's no pre-built installer yet, so you'll need to build it yourself:
 1. Install [Node.js](https://nodejs.org/) (LTS) and the [Rust toolchain](https://www.rust-lang.org/tools/install)
 2. Install the [Tauri prerequisites for Windows](https://tauri.app/start/prerequisites/) (mainly the WebView2 runtime and the Visual Studio C++ Build Tools — most Windows 10/11 machines already have WebView2)
 3. Clone the repo:
+git clone https://github.com/bakgat-beep/vertaal.git
+cd vertaal
+
+4. Install dependencies and run it:
+
+  npm install
+  npm run tauri dev
+
+
+## Building a distributable app
+
+npm run tauri build
+
+The installer will be in `src-tauri/target/release/bundle/`.
+
+## Using Vertaal
+
+1. **Create a project** — pick a game, choose "Vanilla" (translate the base game) or "Mod" (translate a specific mod), set your source and target languages, and point it at the game's install folder (or the mod's own folder).
+2. **Import** — Vertaal scans for localization files and pulls in every string.
+3. **Translate** — work through strings by category, use AI-assist per string or in batches, or type translations manually. A glossary keeps terminology consistent.
+4. **Confirm** — AI and manual drafts stay unconfirmed until a human reviews and confirms them.
+5. **Export** — "Build Mod" packages everything into a proper Paradox mod folder, ready to enable in the launcher. For mod translations, this is a separate companion mod — enable both the original mod and the translation together.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the project's architecture (the `GameAdapter` pattern for adding new games, the `TranslationProvider` pattern for adding new AI services), and how to submit changes.
+
+## License
+
+[GNU GPL v3](LICENSE). Contributions are welcome under the same license.
