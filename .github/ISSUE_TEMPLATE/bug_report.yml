@@ -1,0 +1,74 @@
+name: Bug Report
+description: Something isn't working the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! The more specific you can be, the faster it can actually get fixed — "it doesn't work" is very hard to act on, but an exact error message and exact steps are easy to.
+
+  - type: input
+    id: version
+    attributes:
+      label: Vertaal version
+      description: Found in the title bar, or the filename of the installer you downloaded
+      placeholder: "e.g. v0.2.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: project-type
+    attributes:
+      label: Project type
+      options:
+        - Vanilla (base game)
+        - Mod (translating a specific mod)
+        - Not project-related
+    validations:
+      required: true
+
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      placeholder: "e.g. Europa Universalis V"
+
+  - type: input
+    id: provider
+    attributes:
+      label: Translation provider in use (if relevant)
+      placeholder: "e.g. Google Translate, TranslateGemma via Ollama, none/manual"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include the exact error message or status-bar text if there was one — word for word, not paraphrased.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps, in order, from opening the app (or as close to it as you can get). If it only happens with a specific string, please paste that exact string.
+      placeholder: |
+        1. Open project X
+        2. Click...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Any relevant error text or log output
+      description: If the game itself logged an error (e.g. a mod failing to load), paste the exact lines here — this has been the single most useful thing for diagnosing real bugs so far.
+      render: shell
