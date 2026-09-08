@@ -2,7 +2,7 @@ import WelcomeScreen from "./WelcomeScreen";
 import { findLocFiles, extractModCategory, extractModSubcategory } from "./import";
 import { useState, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile, readDir, writeTextFile, mkdir, writeFile } from "@tauri-apps/plugin-fs";
+import { readTextFile, writeTextFile, mkdir, writeFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import "./App.css";
 import { getDb } from "./db";
@@ -1038,20 +1038,7 @@ function App() {
     await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
     setStatus(`Marked ${matches.length} code-only strings as AI draft.`);
   }
-  
-  async function handleBackupNow() {
-    const docs = await documentDir();
-    const defaultPath = await join(docs, `vertaal-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.db`);
-    const chosenPath = await save({ defaultPath });
-    if (!chosenPath) return;
-    setStatus("Backing up database...");
-    try {
-      await backupDatabase(chosenPath);
-      setStatus(`Backup saved: ${chosenPath}`);
-    } catch (err) {
-      setStatus(`Backup failed: ${err}`);
-    }
-  }
+
 
   async function testGit() {
     const version = await checkGitAvailable();
