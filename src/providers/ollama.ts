@@ -54,6 +54,7 @@ export const ollamaProvider: TranslationProvider = {
   id: "ollama",
   displayName: "TranslateGemma (local, via Ollama)",
   isLocal: true,
+  requiresModel: true,
   supportsGlossary: true,
   supportsBatch: false,
   translate,

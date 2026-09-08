@@ -25,6 +25,10 @@
         "allow": [{ "path": "**" }]
     },
     {
+        "identifier": "opener:allow-open-path",
+        "allow": [{ "path": "**" }]
+    },
+    {
       "identifier": "shell:allow-execute",
       "allow": [
         {

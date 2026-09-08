@@ -1,5 +1,5 @@
 import WelcomeScreen from "./WelcomeScreen";
-import { findLocFiles } from "./import";
+import { findLocFiles, extractModCategory, extractModSubcategory } from "./import";
 import { useState, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile, readDir, writeTextFile, mkdir, writeFile } from "@tauri-apps/plugin-fs";
@@ -13,6 +13,7 @@ import { GAME_ADAPTERS } from "./games";
 import { getContributorName, setContributorName } from "./settings";
 import { backupDatabase } from "./backup";
 import { exportPortableProjectData } from "./portableExport";
+import { importPortableProjectData } from "./mergeImport";
 import GlossaryManager from "./GlossaryManager";
 import { loadHistory, type HistoryEntry } from "./history";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -21,8 +22,12 @@ import { checkGitAvailable } from "./git";
 import CollaborationPanel from "./CollaborationPanel";
 import { TRANSLATION_PROVIDERS } from "./providers";
 import { getProviderCredentials } from "./providers/credentials.ts";
+import ProjectSettings from "./ProjectSettings";
+import { buildCompanionDescriptor } from "./modExport";
+import { openPath } from "@tauri-apps/plugin-opener";
+import ExportSummary, { type ExportPreflight } from "./ExportSummary";
 
-type ViewMode = "all" | "untranslated" | "translated"  | "ai-draft" | "search" | "category" | "subcategory";
+type ViewMode = "all" | "untranslated" | "translated" | "aidraft" | "outdated" | "issues" | "search" | "category" | "subcategory";
 
 interface SubcategoryCount {
   subcategory: string;
@@ -73,7 +78,12 @@ function App() {
     confirmed: 0,
     total: 0,
     outdated: 0,
+    issues: 0,
   });
+
+  const [categoryStatusFilter, setCategoryStatusFilter] = useState<Set<string>>(
+    new Set(["untranslated", "ai-suggested", "human-confirmed"])
+  );
 
   const [showWelcome, setShowWelcome] = useState(true);
 
@@ -83,6 +93,11 @@ function App() {
   const [showGlossaryManager, setShowGlossaryManager] = useState(false);
 
   const [showCollaboration, setShowCollaboration] = useState(false);
+
+  const [showProjectSettings, setShowProjectSettings] = useState(false);
+
+  const [showExportSummary, setShowExportSummary] = useState(false);
+  const [exportPreflight, setExportPreflight] = useState<ExportPreflight | null>(null);
 
   function handleProjectSelected(project: Project) {
     setCurrentProject(project);
@@ -96,7 +111,6 @@ function App() {
   useEffect(() => {
     if (!currentProject) return;
     refreshCounts();
-    loadCategories();
   }, [currentProject]);
 
   useEffect(() => {
@@ -106,7 +120,7 @@ function App() {
 
   function adapter() {
     if (!currentProject) return null;
-    return GAME_ADAPTERS[currentProject.game_id] ?? null;
+    return GAME_ADAPTERS[currentProject.parent_game_id] ?? null;
   }
 
   // --- Import ---
@@ -115,6 +129,7 @@ function App() {
     if (!currentProject) return;
     const gm = adapter();
     if (!gm) return;
+    const isMod = currentProject.project_type === "mod";
     setStatus("Waiting for folder selection...");
     const folderPath = await open({ directory: true, multiple: false, defaultPath: currentProject.install_path ?? undefined });
     if (!folderPath) {
@@ -128,9 +143,12 @@ function App() {
       return;
     }
     const db = await getDb();
+    const gamesDisplayName = isMod
+      ? `${gm.displayName} — ${currentProject.source_mod_name ?? "Mod"}`
+      : gm.displayName;
     await db.execute(
       "INSERT OR REPLACE INTO games (game_id, display_name, detected_version) VALUES ($1, $2, $3)",
-      [currentProject.game_id, adapter()?.displayName ?? currentProject.game_id, "1.0"]
+      [currentProject.game_id, gamesDisplayName, "1.0"]
     );
     let totalStrings = 0;
     for (const filePath of files) {
@@ -139,8 +157,8 @@ function App() {
       const parsed = parseLocFile(content);
       const fileName = filePath.split("\\").pop() ?? filePath;
       const contextLabel = fileName.replace(`_l_${currentProject.source_language}.yml`, "").replace(/_/g, " ");
-      const category = gm.extractCategory(filePath);
-      const subcategory = gm.extractSubcategory(filePath);
+      const category = isMod ? extractModCategory(filePath) : gm.extractCategory(filePath);
+      const subcategory = isMod ? extractModSubcategory(filePath) : gm.extractSubcategory(filePath);
       for (const item of parsed) {
         const hash = String(item.text.length) + "-" + item.text.slice(0, 20);
         await db.execute(
@@ -157,18 +175,31 @@ function App() {
     )) as { total: number }[];
     setCount(countRows[0].total);
     await refreshCounts();
-    await loadCategories();
     setStatus(`Import complete. Processed ${files.length} files, ${totalStrings} strings this run.`);
   }
 
-  // --- Unified page loader ---
+   function buildStatusClause(filter: Set<string>): string {
+    const clauses: string[] = [];
+    if (filter.has("untranslated")) clauses.push("(t.status IS NULL OR t.status IN ('untranslated', 'human-draft'))");
+    if (filter.has("ai-suggested")) clauses.push("t.status = 'ai-suggested'");
+    if (filter.has("human-confirmed")) clauses.push("t.status = 'human-confirmed'");
+    if (clauses.length === 0) return "1=0";
+    return `(${clauses.join(" OR ")})`;
+  }
 
-  async function loadPage(mode: ViewMode, newOffset: number, category?: string, subcategory?: string) {
+  async function loadPage(
+    mode: ViewMode,
+    newOffset: number,
+    category?: string,
+    subcategory?: string,
+    statusFilterOverride?: Set<string>
+  ) {
     if (!currentProject) return;
     setStatus("Loading...");
     const db = await getDb();
     const gameId = currentProject.game_id;
     const lang = currentProject.target_language;
+    const statusFilter = statusFilterOverride ?? categoryStatusFilter;
 
     const baseSelect = `
       SELECT s.key as key, s.game_id as game_id, s.source_text as source_text,
@@ -211,17 +242,23 @@ function App() {
     } else if (mode === "category") {
       const sql =
         baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
-        " AND s.category = $3 ORDER BY s.file_path, s.key LIMIT $4 OFFSET $5";
+        ` AND s.category = $3 AND ${buildStatusClause(statusFilter)} ORDER BY s.file_path, s.key LIMIT $4 OFFSET $5`;
       batch = (await db.select(sql, [lang, gameId, category, BATCH_SIZE, newOffset])) as EditorRow[];
     } else if (mode === "subcategory") {
       const sql =
         baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
-        " AND s.category = $3 AND s.subcategory = $4 ORDER BY s.file_path, s.key LIMIT $5 OFFSET $6";
+        ` AND s.category = $3 AND s.subcategory = $4 AND ${buildStatusClause(statusFilter)} ORDER BY s.file_path, s.key LIMIT $5 OFFSET $6`;
       batch = (await db.select(sql, [lang, gameId, category, subcategory, BATCH_SIZE, newOffset])) as EditorRow[];
     } else if (mode === "outdated") {
       const sql =
         baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
         " AND t.source_hash_at_translation IS NOT NULL AND t.source_hash_at_translation != s.source_text_hash ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4";
+      batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
+    } else if (mode === "issues") {
+      const sql =
+        baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
+        ` AND t.status IN ('human-confirmed', 'ai-suggested', 'human-draft') AND (t.translated_text IS NULL OR TRIM(t.translated_text) = '')
+          ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4`;
       batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
     }
 
@@ -233,6 +270,7 @@ function App() {
     for (const row of batch) initialDrafts[row.key] = row.translated_text ?? "";
     setDrafts(initialDrafts);
 
+    await loadCategories();
     setStatus(`Showing ${batch.length} result(s) — view: ${mode}, offset ${newOffset}.`);
   }
 
@@ -308,12 +346,15 @@ function App() {
   async function confirmRow(row: EditorRow) {
     if (!currentProject) return;
     const db = await getDb();
+    const lang = currentProject.target_language;
+    const finalText = (row.translated_text ?? "").trim() !== "" ? row.translated_text! : row.source_text;
+
     await db.execute(
-      `UPDATE translations SET status = 'human-confirmed', translated_by = $1, updated_at = datetime('now'), source_hash_at_translation = $2
-       WHERE string_key = $3 AND game_id = $4 AND target_language = $5`,
-      [contributorName, row.source_text_hash, row.key, row.game_id, currentProject.target_language]
+      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_hash_at_translation, flagged)
+       VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), $6, COALESCE((SELECT flagged FROM translations WHERE string_key = $7 AND game_id = $8 AND target_language = $9), 0))`,
+      [row.key, row.game_id, lang, finalText, contributorName, row.source_text_hash, row.key, row.game_id, lang]
     );
-    const updated = { ...row, status: "human-confirmed", source_hash_at_translation: row.source_text_hash };
+    const updated = { ...row, translated_text: finalText, status: "human-confirmed", source_hash_at_translation: row.source_text_hash };
     setRows((prev) => prev.map((r) => (r.key === row.key ? updated : r)));
     setSelectedRow(updated);
     refreshCounts();
@@ -441,6 +482,24 @@ function App() {
     }
   }
   
+  async function handleImportData() {
+    if (!currentProject) return;
+    const filePath = await open({ multiple: false, filters: [{ name: "Vertaal export", extensions: ["json"] }] });
+    if (!filePath) return;
+    setStatus("Importing project data...");
+    try {
+      const summary = await importPortableProjectData(currentProject, filePath as string);
+      setStatus(
+        `Import complete: ${summary.applied} applied, ${summary.skippedLocalNewer} skipped (your version was newer), ` +
+          `${summary.skippedNoLocalString} skipped (string not found locally), ${summary.glossaryAdded} glossary term(s) added, ${summary.glossaryUpdated} updated.`
+      );
+      await refreshCounts();
+      await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+    } catch (err) {
+      setStatus(`Import failed: ${err}`);
+    }
+  }
+
   // --- Mod export ---
 
   async function writeTextFileWithBom(path: string, content: string) {
@@ -452,78 +511,229 @@ function App() {
     await writeFile(path, combined);
   }
 
-  async function exportMod() {
+  async function openOutputFolder() {
+    if (!currentProject?.output_path) return;
+    try {
+      await openPath(currentProject.output_path);
+    } catch (err) {
+      setStatus(`Couldn't open folder: ${err}`);
+    }
+  }
+
+  async function openExportModal() {
     if (!currentProject) return;
-    const gm = adapter();
-    if (!gm) return;
-
-    setStatus("Choose a folder to export the mod into...");
-        const defaultDest = currentProject.output_path ?? (await gm.detectModPath());
-    const destFolder = await open({ directory: true, multiple: false, defaultPath: defaultDest });
-    if (!destFolder) {
-      setStatus("Export cancelled.");
-      return;
-    }
-
-    const modRoot = await join(destFolder as string, currentProject.mod_name.toLowerCase().replace(/\s+/g, "-"));
-
-    setStatus("Gathering translated strings...");
     const db = await getDb();
-
-    const translated = (await db.select(
-      `SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
-       FROM strings s
-       JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-       WHERE t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
-         AND s.game_id = $1 AND t.target_language = $2`,
+    const result = (await db.select(
+      `SELECT
+         (SELECT COUNT(*) FROM strings WHERE game_id = $1) as total,
+         (SELECT COUNT(*) FROM translations WHERE status = 'human-confirmed' AND translated_text IS NOT NULL
+           AND translated_text != '' AND game_id = $1 AND target_language = $2) as confirmed,
+         (SELECT COUNT(*) FROM translations t JOIN strings s ON t.string_key = s.key AND t.game_id = s.game_id
+           WHERE t.status = 'human-confirmed' AND t.game_id = $1 AND t.target_language = $2
+           AND t.source_hash_at_translation IS NOT NULL AND t.source_hash_at_translation != s.source_text_hash) as outdated,
+         (SELECT COUNT(*) FROM translations WHERE flagged = 1 AND game_id = $1 AND target_language = $2) as flagged`,
       [currentProject.game_id, currentProject.target_language]
-    )) as { key: string; file_path: string; translated_text: string }[];
+    )) as ExportPreflight[];
+    setExportPreflight(result[0]);
+    setShowExportSummary(true);
+  }
 
-    if (translated.length === 0) {
-      setStatus("No confirmed translations to export yet.");
-      return;
+  type ExportOutcome =
+    | { status: "ok"; stringsWritten: number; filesWritten: number; destPath: string }
+    | { status: "cancelled" }
+    | { status: "error"; error: string };
+
+  async function exportMod(): Promise<ExportOutcome> {
+    if (!currentProject) return { status: "error", error: "No project loaded." };
+    if (currentProject.project_type === "mod") {
+      return exportModCompanion();
     }
+    const gm = adapter();
+    if (!gm) return { status: "error", error: "Could not resolve this project's game." };
 
-    const byFile: Record<string, { key: string; translated_text: string }[]> = {};
-    for (const row of translated) {
-      const relPath = gm.toModRelativePath(row.file_path);
-      if (!relPath) continue;
-      if (!byFile[relPath]) byFile[relPath] = [];
-      byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
-    }
+    try {
+      setStatus("Choose a folder to export the mod into...");
+      const defaultDest = currentProject.output_path ?? (await gm.detectModPath());
+      const destFolder = await open({ directory: true, multiple: false, defaultPath: defaultDest });
+      if (!destFolder) return { status: "cancelled" };
 
-    setStatus(`Writing ${Object.keys(byFile).length} localization files...`);
+      const modRoot = await join(destFolder as string, currentProject.mod_name.toLowerCase().replace(/\s+/g, "-"));
 
-    for (const [relPath, entries] of Object.entries(byFile)) {
-      const fullOutputPath = await join(modRoot, relPath);
-      const folderPath = fullOutputPath.substring(0, fullOutputPath.lastIndexOf("\\"));
-      await mkdir(folderPath, { recursive: true });
+      setStatus("Gathering translated strings...");
+      const db = await getDb();
 
-      let fileContent = `l_${currentProject.source_language}:\n`;
-      for (const entry of entries) {
-        const safeText = entry.translated_text.replace(/"/g, '\\"');
-        fileContent += ` ${entry.key}: "${safeText}"\n`;
+      const translated = (await db.select(
+        `SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
+         FROM strings s
+         JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
+         WHERE t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
+           AND s.game_id = $1 AND t.target_language = $2`,
+        [currentProject.game_id, currentProject.target_language]
+      )) as { key: string; file_path: string; translated_text: string }[];
+
+      if (translated.length === 0) {
+        return { status: "error", error: "No confirmed translations to export yet." };
       }
-      await writeTextFileWithBom(fullOutputPath, fileContent);
+
+      const nativeCode = gm.nativeLanguages[currentProject.target_language.toLowerCase()];
+      const languageCode = nativeCode ?? currentProject.source_language;
+      if (nativeCode) {
+        setStatus(`Exporting as a native "${currentProject.target_language}" language mod...`);
+      }
+
+      const byFile: Record<string, { key: string; translated_text: string }[]> = {};
+      for (const row of translated) {
+        const relPath = gm.toModRelativePath(row.file_path, languageCode);
+        if (!relPath) continue;
+        if (!byFile[relPath]) byFile[relPath] = [];
+        byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
+      }
+
+      setStatus(`Writing ${Object.keys(byFile).length} localization files...`);
+
+      for (const [relPath, entries] of Object.entries(byFile)) {
+        const fullOutputPath = await join(modRoot, relPath);
+        const folderPath = fullOutputPath.substring(0, fullOutputPath.lastIndexOf("\\"));
+        await mkdir(folderPath, { recursive: true });
+
+        let fileContent = `l_${languageCode}:\n`;
+        for (const entry of entries) {
+          const safeText = entry.translated_text.replace(/"/g, '\\"');
+          fileContent += ` ${entry.key}: "${safeText}"\n`;
+        }
+        await writeTextFileWithBom(fullOutputPath, fileContent);
+      }
+
+      await mkdir(await join(modRoot, ".metadata"), { recursive: true });
+      await writeTextFile(
+        await join(modRoot, ".metadata", "metadata.json"),
+        JSON.stringify(gm.buildMetadata(currentProject.mod_name, currentProject.target_language), null, 2)
+      );
+
+      const placeholderPngBase64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+      const pngBytes = Uint8Array.from(atob(placeholderPngBase64), (c) => c.charCodeAt(0));
+      await writeFile(await join(modRoot, ".metadata", "thumbnail.png"), pngBytes);
+
+      await writeTextFile(await join(modRoot, "descriptor.mod"), gm.buildDescriptor(currentProject.mod_name));
+
+      if (gm.buildOuterModPointer) {
+        const pointer = gm.buildOuterModPointer(currentProject.mod_name, modRoot);
+        await writeTextFile(await join(destFolder as string, pointer.fileName), pointer.content);
+      }
+
+      const db2 = await getDb();
+      await db2.execute("UPDATE projects SET output_path = $1 WHERE id = $2", [destFolder, currentProject.id]);
+
+      return {
+        status: "ok",
+        stringsWritten: translated.length,
+        filesWritten: Object.keys(byFile).length,
+        destPath: modRoot,
+      };
+    } catch (err) {
+      return { status: "error", error: String(err) };
+    }
+  }
+
+  async function exportModCompanion(): Promise<ExportOutcome> {
+    if (!currentProject) return { status: "error", error: "No project loaded." };
+    const gm = adapter();
+    if (!gm) return { status: "error", error: "Could not resolve this project's game." };
+    if (!gm.toModExportRelativePath) {
+      return { status: "error", error: `Mod export isn't supported yet for ${gm.displayName}.` };
+    }
+    if (!currentProject.source_mod_name) {
+      return { status: "error", error: "This project is missing the source mod's name — check Project Settings." };
     }
 
-    await mkdir(await join(modRoot, ".metadata"), { recursive: true });
-    await writeTextFile(
-      await join(modRoot, ".metadata", "metadata.json"),
-      JSON.stringify(gm.buildMetadata(currentProject.mod_name, currentProject.target_language), null, 2)
-    );
+    try {
+      setStatus("Choose a folder to export the companion mod into...");
+      const defaultDest = currentProject.output_path ?? (await gm.detectModPath());
+      const destFolder = await open({ directory: true, multiple: false, defaultPath: defaultDest });
+      if (!destFolder) return { status: "cancelled" };
 
-    const placeholderPngBase64 =
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-    const pngBytes = Uint8Array.from(atob(placeholderPngBase64), (c) => c.charCodeAt(0));
-    await writeFile(await join(modRoot, ".metadata", "thumbnail.png"), pngBytes);
+      const modRoot = await join(destFolder as string, currentProject.mod_name.toLowerCase().replace(/\s+/g, "-"));
 
-    await writeTextFile(await join(modRoot, "descriptor.mod"), gm.buildDescriptor(currentProject.mod_name));
-    
-        const db2 = await getDb();
-    await db2.execute("UPDATE projects SET output_path = $1 WHERE id = $2", [destFolder, currentProject.id]);
+      setStatus("Gathering translated strings...");
+      const db = await getDb();
 
-    setStatus(`Export complete. Wrote ${translated.length} strings across ${Object.keys(byFile).length} files to ${modRoot}`);
+      const translated = (await db.select(
+        `SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
+         FROM strings s
+         JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
+         WHERE t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
+           AND s.game_id = $1 AND t.target_language = $2`,
+        [currentProject.game_id, currentProject.target_language]
+      )) as { key: string; file_path: string; translated_text: string }[];
+
+      if (translated.length === 0) {
+        return { status: "error", error: "No confirmed translations to export yet." };
+      }
+
+      const nativeCode = gm.nativeLanguages[currentProject.target_language.toLowerCase()];
+      const languageCode = nativeCode ?? currentProject.source_language;
+      if (nativeCode) {
+        setStatus(`Exporting as a native "${currentProject.target_language}" language mod...`);
+      }
+
+      const byFile: Record<string, { key: string; translated_text: string }[]> = {};
+      for (const row of translated) {
+        const relPath = gm.toModExportRelativePath(row.file_path, languageCode);
+        if (!relPath) continue;
+        if (!byFile[relPath]) byFile[relPath] = [];
+        byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
+      }
+
+      setStatus(`Writing ${Object.keys(byFile).length} localization files...`);
+
+      for (const [relPath, entries] of Object.entries(byFile)) {
+        const fullOutputPath = await join(modRoot, relPath);
+        const folderPath = fullOutputPath.substring(0, fullOutputPath.lastIndexOf("\\"));
+        await mkdir(folderPath, { recursive: true });
+
+        let fileContent = `l_${languageCode}:\n`;
+        for (const entry of entries) {
+          const safeText = entry.translated_text.replace(/"/g, '\\"');
+          fileContent += ` ${entry.key}: "${safeText}"\n`;
+        }
+        await writeTextFileWithBom(fullOutputPath, fileContent);
+      }
+
+      await mkdir(await join(modRoot, ".metadata"), { recursive: true });
+      const metadata = {
+        ...gm.buildMetadata(currentProject.mod_name, currentProject.target_language),
+        short_description: `${currentProject.target_language} translation of the mod "${currentProject.source_mod_name}".`,
+      };
+      await writeTextFile(await join(modRoot, ".metadata", "metadata.json"), JSON.stringify(metadata, null, 2));
+
+      const placeholderPngBase64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+      const pngBytes = Uint8Array.from(atob(placeholderPngBase64), (c) => c.charCodeAt(0));
+      await writeFile(await join(modRoot, ".metadata", "thumbnail.png"), pngBytes);
+
+      await writeTextFile(
+        await join(modRoot, "descriptor.mod"),
+        buildCompanionDescriptor(currentProject.mod_name, currentProject.source_mod_name)
+      );
+
+      if (gm.buildOuterModPointer) {
+        const pointer = gm.buildOuterModPointer(currentProject.mod_name, modRoot);
+        await writeTextFile(await join(destFolder as string, pointer.fileName), pointer.content);
+      }
+
+      const db2 = await getDb();
+      await db2.execute("UPDATE projects SET output_path = $1 WHERE id = $2", [destFolder, currentProject.id]);
+
+      return {
+        status: "ok",
+        stringsWritten: translated.length,
+        filesWritten: Object.keys(byFile).length,
+        destPath: modRoot,
+      };
+    } catch (err) {
+      return { status: "error", error: String(err) };
+    }
   }
 
   async function refreshCounts() {
@@ -536,9 +746,12 @@ function App() {
          (SELECT COUNT(*) FROM translations WHERE status = 'ai-suggested' AND game_id = $1 AND target_language = $2) as ai_draft,
          (SELECT COUNT(*) FROM translations t JOIN strings s ON t.string_key = s.key AND t.game_id = s.game_id
            WHERE t.game_id = $1 AND t.target_language = $2
-           AND t.source_hash_at_translation IS NOT NULL AND t.source_hash_at_translation != s.source_text_hash) as outdated`,
+           AND t.source_hash_at_translation IS NOT NULL AND t.source_hash_at_translation != s.source_text_hash) as outdated,
+         (SELECT COUNT(*) FROM translations WHERE game_id = $1 AND target_language = $2
+           AND status IN ('human-confirmed', 'ai-suggested', 'human-draft')
+           AND (translated_text IS NULL OR TRIM(translated_text) = '')) as issues`,
       [currentProject.game_id, currentProject.target_language]
-    )) as { total: number; confirmed: number; ai_draft: number; outdated: number }[];
+    )) as { total: number; confirmed: number; ai_draft: number; outdated: number; issues: number }[];
 
     const r = result[0];
     setStatusCounts({
@@ -547,14 +760,26 @@ function App() {
       aiDraft: r.ai_draft,
       untranslated: r.total - r.confirmed - r.ai_draft,
       outdated: r.outdated,
+      issues: r.issues,
     });
+    await loadCategories();
   }
 
   // --- AI translation ---
 
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   async function translateAndSave(key: string, gameId: string, sourceText: string): Promise<{ ok: boolean; error?: string }> {
     if (!currentProject) return { ok: false, error: "No project loaded." };
-    if (!currentProject.ai_model) return { ok: false, error: "No AI model configured for this project." };
+    const provider = TRANSLATION_PROVIDERS[currentProject.translation_provider_id ?? "ollama"];
+    if (!provider) {
+      return { ok: false, error: `No translation provider registered for "${currentProject.translation_provider_id}".` };
+    }
+    if (provider.requiresModel && !currentProject.ai_model) {
+      return { ok: false, error: `No model configured for ${provider.displayName} — set one in Project Settings.` };
+    }
     try {
       const { text: protectedText, tokens } = protectTokens(sourceText);
       const terms = await loadGlossaryTerms(gameId, currentProject.target_language);
@@ -562,20 +787,19 @@ function App() {
       const glossaryInstruction =
         matchedTerms.length > 0 ? buildGlossaryInstructions(sourceText, matchedTerms).join("\n") : undefined;
 
-      const provider = TRANSLATION_PROVIDERS[currentProject.translation_provider_id ?? "ollama"];
-      if (!provider) {
-        return { ok: false, error: `No translation provider registered for "${currentProject.translation_provider_id}".` };
-      }
-
       const credentials = await getProviderCredentials(provider.id);
+
+      if (provider.id === "google-translate") {
+        await sleep(currentProject.google_translate_delay_ms ?? 500);
+      }
 
       let rawTranslation: string;
       try {
         const result = await provider.translate(
           {
             text: protectedText,
-            sourceLanguage: currentProject.source_language,
-            targetLanguage: currentProject.target_language,
+            sourceLanguage: currentProject.source_language_code_override?.trim() || currentProject.source_language,
+            targetLanguage: currentProject.target_language_code_override?.trim() || currentProject.target_language,
             glossaryInstruction,
           },
           {
@@ -590,7 +814,15 @@ function App() {
         return { ok: false, error: `Provider error: ${err}` };
       }
 
+      const gm = GAME_ADAPTERS[currentProject.parent_game_id];
+      if (gm?.forbiddenCharacters) {
+        for (const [bad, good] of Object.entries(gm.forbiddenCharacters)) {
+          rawTranslation = rawTranslation.split(bad).join(good);
+        }
+      }
+
       const db = await getDb();
+      const attribution = currentProject.ai_model ?? provider.displayName;
 
       const currentHashRow = (await db.select(
         "SELECT source_text_hash FROM strings WHERE key = $1 AND game_id = $2",
@@ -602,7 +834,7 @@ function App() {
         await db.execute(
           `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
            VALUES ($1, $2, $3, '', 'untranslated', $4, datetime('now'), 1, $5)`,
-          [key, gameId, currentProject.target_language, currentProject.ai_model, currentHash]
+          [key, gameId, currentProject.target_language, attribution, currentHash]
         );
         return { ok: false, error: "AI response did not preserve required game codes/tokens — flagged for manual review." };
       }
@@ -612,19 +844,62 @@ function App() {
       await db.execute(
         `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
          VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
-        [key, gameId, currentProject.target_language, finalTranslation, currentProject.ai_model, key, gameId, currentProject.target_language, currentHash]
+        [key, gameId, currentProject.target_language, finalTranslation, attribution, key, gameId, currentProject.target_language, currentHash]
       );
 
       await db.execute(
         `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [key, gameId, currentProject.target_language, "", finalTranslation, currentProject.ai_model]
+        [key, gameId, currentProject.target_language, "", finalTranslation, attribution]
       );
 
       return { ok: true };
     } catch (err) {
       return { ok: false, error: `Unexpected error: ${err}` };
     }
+  }
+
+  async function translateWithRetry(
+    key: string,
+    gameId: string,
+    sourceText: string,
+    maxAttempts: number = 3,
+    retryDelayMs: number = currentProject?.retry_delay_ms ?? 2000
+    ): Promise<{ ok: boolean; error?: string; attempts: number }> {
+    let lastResult: { ok: boolean; error?: string } = { ok: false, error: "No attempts made." };
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (stopRequestedRef.current) {
+        return { ok: false, error: "Stopped by user.", attempts: attempt - 1 };
+      }
+      lastResult = await translateAndSave(key, gameId, sourceText);
+      if (lastResult.ok) {
+        return { ok: true, attempts: attempt };
+      }
+      if (attempt < maxAttempts) {
+        await sleep(retryDelayMs);
+      }
+    }
+
+    if (currentProject) {
+      try {
+        const db = await getDb();
+        const currentHashRow = (await db.select(
+          "SELECT source_text_hash FROM strings WHERE key = $1 AND game_id = $2",
+          [key, gameId]
+        )) as { source_text_hash: string }[];
+        const currentHash = currentHashRow[0]?.source_text_hash ?? null;
+
+        await db.execute(
+          `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
+           VALUES ($1, $2, $3, '', 'untranslated', $4, datetime('now'), 1, $5)`,
+          [key, gameId, currentProject.target_language, currentProject.ai_model ?? "", currentHash]
+        );
+      } catch {
+      }
+    }
+
+    return { ok: false, error: `Failed after ${maxAttempts} attempts: ${lastResult.error ?? "unknown error"}`, attempts: maxAttempts };
   }
 
   async function aiTranslateRow(row: EditorRow) {
@@ -639,9 +914,11 @@ function App() {
   }
 
   async function batchTranslatePage() {
-    const targets = rows.filter((r) => (!r.status || r.status === "untranslated") && !r.flagged);
+    const targets = rows.filter(
+      (r) => (!r.status || r.status === "untranslated" || r.status === "ai-suggested") && !r.flagged
+    );
     if (targets.length === 0) {
-      setStatus("No untranslated strings on this page.");
+      setStatus("No untranslated or AI-suggested strings on this page.");
       return;
     }
     setBatchRunning(true);
@@ -669,6 +946,97 @@ function App() {
         ? `Page batch complete. ${succeeded} translated.`
         : `Page batch finished: ${succeeded}/${targets.length} translated. Last error: ${lastError}`
     );
+  }
+
+  async function confirmAllOnPage() {
+    if (!currentProject) return;
+    const targets = rows.filter(
+      (r) => (r.status !== "human-confirmed" || (r.translated_text ?? "").trim() === "") && !r.flagged
+    );
+    if (targets.length === 0) {
+      setStatus("Nothing to confirm on this page.");
+      return;
+    }
+    const proceed = window.confirm(
+      `Confirm all ${targets.length} string(s) on this page? Any row with no translation yet will be confirmed using its original source text as-is.`
+    );
+    if (!proceed) return;
+
+    setStatus(`Confirming ${targets.length} strings...`);
+    const db = await getDb();
+    const lang = currentProject.target_language;
+
+    for (const row of targets) {
+      const finalText = (row.translated_text ?? "").trim() !== "" ? row.translated_text : row.source_text;
+      await db.execute(
+        `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_hash_at_translation, flagged)
+         VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), $6, COALESCE((SELECT flagged FROM translations WHERE string_key = $7 AND game_id = $8 AND target_language = $9), 0))`,
+        [row.key, row.game_id, lang, finalText, contributorName, row.source_text_hash, row.key, row.game_id, lang]
+      );
+    }
+
+    refreshCounts();
+    await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+    setStatus(`Confirmed ${targets.length} strings on this page.`);
+  }
+
+    async function copySourceText(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("Copied source text to clipboard.");
+    } catch (err) {
+      setStatus(`Couldn't copy to clipboard: ${err}`);
+    }
+  }
+
+  function estimateRows(text: string): number {
+    if (!text) return 4;
+    const explicitLines = (text.match(/\n/g) ?? []).length + 1;
+    const wrapLines = Math.ceil(text.length / 55);
+    return Math.min(16, Math.max(4, Math.max(explicitLines, wrapLines) + 1));
+  }
+
+    async function batchAutoAcceptProtectedOnly() {
+    if (!currentProject) return;
+    const db = await getDb();
+    const gameId = currentProject.game_id;
+    const lang = currentProject.target_language;
+
+    const candidates = (await db.select(
+      `SELECT s.key as key, s.source_text as source_text, s.source_text_hash as source_text_hash
+       FROM strings s
+       LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
+       WHERE s.game_id = $2 AND (t.status IS NULL OR t.status = 'untranslated') AND (t.flagged IS NULL OR t.flagged = 0)`,
+      [lang, gameId]
+    )) as { key: string; source_text: string; source_text_hash: string }[];
+
+    const matches = candidates.filter((c) => {
+      const { text } = protectTokens(c.source_text);
+      return text.replace(/__TOKEN_\d+__/g, "").trim() === "";
+    });
+
+    if (matches.length === 0) {
+      setStatus("No fully-protected (code-only) strings found among untranslated strings.");
+      return;
+    }
+
+    const proceed = window.confirm(
+      `Found ${matches.length} untranslated string(s) made up entirely of functions/icons/variables, with no actual translatable text. Mark them all as AI draft using the source text as-is?`
+    );
+    if (!proceed) return;
+
+    setStatus(`Marking ${matches.length} code-only strings as AI draft...`);
+    for (const m of matches) {
+      await db.execute(
+        `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
+         VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
+        [m.key, gameId, lang, m.source_text, "auto (code-only)", m.key, gameId, lang, m.source_text_hash]
+      );
+    }
+
+    refreshCounts();
+    await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+    setStatus(`Marked ${matches.length} code-only strings as AI draft.`);
   }
   
   async function handleBackupNow() {
@@ -710,7 +1078,7 @@ function App() {
 
     const db = await getDb();
     let done = 0;
-    let consecutiveFailures = 0;
+    let distinctFailureStreak = 0;
 
     while (done < targetCount && !stopRequestedRef.current) {
       const next = (await db.select(
@@ -730,16 +1098,16 @@ function App() {
 
       const row = next[0];
       setStatus(`Overnight batch: ${done + 1}/${targetCount} — ${row.key}`);
-      const result = await translateAndSave(row.key, row.game_id, row.source_text);
+      const result = await translateWithRetry(row.key, row.game_id, row.source_text);
 
       if (result.ok) {
-        consecutiveFailures = 0;
+        distinctFailureStreak = 0;
         done++;
         setBatchProgress({ done, total: targetCount });
       } else {
-        consecutiveFailures++;
-        if (consecutiveFailures >= 3) {
-          setStatus(`Stopped: 3 translations in a row failed. Last error: ${result.error ?? "unknown"}`);
+        distinctFailureStreak++;
+        if (distinctFailureStreak >= 3) {
+          setStatus(`Stopped: 3 different strings failed after retries. Last error: ${result.error ?? "unknown"}`);
           break;
         }
       }
@@ -771,8 +1139,8 @@ function App() {
     for (const row of targets) {
       if (stopRequestedRef.current) break;
       setStatus(`Re-running AI: ${done + 1}/${targets.length} — ${row.key}`);
-      const ok = await translateAndSave(row.key, row.game_id, row.source_text);
-      if (ok) {
+      const result = await translateWithRetry(row.key, row.game_id, row.source_text);
+      if (result.ok) {
         consecutiveFailures = 0;
         done++;
         setBatchProgress({ done, total: targets.length });
@@ -831,17 +1199,34 @@ function App() {
     return <WelcomeScreen onProjectSelected={handleProjectSelected} />;
   }
 
+  const currentProviderRequiresModel =
+    TRANSLATION_PROVIDERS[currentProject.translation_provider_id ?? "ollama"]?.requiresModel ?? true;
+
   return (
     <div className="app-shell">
       <div className="title-bar">
         <div className="logo-mark" />
         <span className="app-name">Vertaal</span>
         <span className="project-context">
-          — {adapter()?.displayName ?? currentProject.game_id} → {currentProject.target_language}
+          — {adapter()?.displayName ?? currentProject.parent_game_id}
+          {currentProject.project_type === "mod" ? ` — Mod: ${currentProject.source_mod_name ?? "?"}` : ""} →{" "}
+          {currentProject.target_language}
         </span>
         <div className="title-bar-spacer" />
         <button onClick={() => setShowWelcome(true)}>Projects</button>
-        <button className="build-mod-button" onClick={exportMod}>
+        <button
+          onClick={openOutputFolder}
+          disabled={!currentProject.output_path}
+          title={
+            currentProject.output_path
+              ? "Open this project's last export folder in File Explorer"
+              : "Export this project at least once (Build Mod) before there's a folder to open"
+          }
+        >
+          Open Output Folder
+        </button>
+        <button onClick={() => setShowProjectSettings(true)}>Project Settings</button>
+        <button className="build-mod-button" onClick={openExportModal}>
           Build Mod
         </button>
       </div>
@@ -854,29 +1239,61 @@ function App() {
           onKeyDown={(e) => {
             if (e.key === "Enter") runSearch();
           }}
-          placeholder="Search by key, English, or translated text..."
-          style={{ width: "260px" }}
+          placeholder="Search..."
+          title="Search by key, source text, or translated text"
+          style={{ width: "180px" }}
         />
-        <button onClick={runSearch}>Search</button>
+        <button onClick={runSearch} title="Run the search above">
+          Search
+        </button>
 
-        <button onClick={() => setShowGlossaryManager(true)}>Manage Glossary</button>
+        <button onClick={() => setShowGlossaryManager(true)} title="View and edit your saved glossary terms">
+          Glossary
+        </button>
 
-        <button onClick={batchTranslatePage} disabled={batchRunning}>
-          AI-Translate This Page
+        <button
+          onClick={batchTranslatePage}
+          disabled={batchRunning}
+          title="AI-translate every untranslated or AI-suggested string on this page, using the current provider"
+        >
+          AI: Page
+        </button>
+        <button
+          onClick={batchAutoAcceptProtectedOnly}
+          disabled={batchRunning}
+          title="Find untranslated strings made entirely of tokens/icons/variables (no real text) across the whole project, and mark them AI draft using the source text as-is"
+        >
+          Auto-Accept Code
+        </button>
+        <button
+          onClick={confirmAllOnPage}
+          disabled={batchRunning}
+          title="Confirm every non-flagged string on this page; anything with no translation yet is confirmed using the source text as-is"
+        >
+          Confirm Page
         </button>
 
         <input
           type="number"
           value={overnightCount}
           onChange={(e) => setOvernightCount(e.target.value)}
-          style={{ width: "80px" }}
+          style={{ width: "70px" }}
           disabled={batchRunning}
+          title="How many strings to translate in the overnight batch below"
         />
-        <button onClick={batchTranslateOvernight} disabled={batchRunning}>
-          Run Overnight Batch
+        <button
+          onClick={batchTranslateOvernight}
+          disabled={batchRunning}
+          title="AI-translate untranslated strings across the whole project, up to the count above"
+        >
+          Run Batch
         </button>
-        <button onClick={batchRerunAIUnconfirmed} disabled={batchRunning}>
-          Re-run AI on Unconfirmed
+        <button
+          onClick={batchRerunAIUnconfirmed}
+          disabled={batchRunning}
+          title="Re-run AI translation on every AI-suggested (unconfirmed) string across the whole project, using the current provider — useful after switching providers"
+        >
+          Retry AI: All
         </button>
 
         {batchRunning && (
@@ -884,16 +1301,35 @@ function App() {
             <span style={{ color: "var(--text-dim)" }}>
               {batchProgress.done}/{batchProgress.total}
             </span>
-            <button onClick={stopBatch}>Stop</button>
+            <button onClick={stopBatch} title="Stop the batch operation currently running">
+              Stop
+            </button>
           </>
         )}
 
         <div className="toolbar-spacer" />
 
-        <button onClick={handleBackupNow}>Backup Now</button>
-        <button onClick={handleExportData}>Export Project Data (JSON)</button>
-        <button onClick={importFolder}>Import Folder</button>{" "}
-        <button onClick={() => setShowCollaboration(true)}>Collaboration</button>
+        <button onClick={handleBackupNow} title="Backs up the ENTIRE app database — every project, every game, not just this one">
+          Backup App
+        </button>
+        <button
+          onClick={handleExportData}
+          title="Export this project's translations + glossary as a shareable JSON file — for sending progress to a collaborator without Git, or moving to another computer. (Backup Now saves the whole app database instead; Collaboration does this automatically via GitHub.)"
+        >
+          Export JSON
+        </button>
+                <button
+          onClick={handleImportData}
+          title="Import a JSON file exported from another Vertaal install (via Export JSON) and merge its translations into this project"
+        >
+          Import JSON
+        </button>
+        <button onClick={importFolder} title="Import a localisation folder from the game install">
+          Import
+        </button>{" "}
+        <button onClick={() => setShowCollaboration(true)} title="Git/GitHub collaboration: sync, pull, and merge with teammates">
+          Collab
+        </button>
       </div>
 
       <div className="content-columns">
@@ -920,6 +1356,12 @@ function App() {
             <span>⚠ Patch Changed</span>
             <span className="sidebar-count" style={{ opacity: statusCounts.outdated === 0 ? 0.4 : 1 }}>
               {statusCounts.outdated.toLocaleString()}
+            </span>
+          </div>
+          <div className="sidebar-item" onClick={() => loadPage("issues", 0)} title="Rows marked confirmed/AI-suggested/drafted with no actual text saved">
+            <span>⚠ Check for Issues</span>
+            <span className="sidebar-count" style={{ opacity: statusCounts.issues === 0 ? 0.4 : 1 }}>
+              {statusCounts.issues.toLocaleString()}
             </span>
           </div>
 
@@ -956,6 +1398,41 @@ function App() {
         </div>
 
         <div className="editor-column">
+          {(viewMode === "category" || viewMode === "subcategory") && (
+            <div style={{ display: "flex", gap: "0.5rem", margin: "0.5rem 0", alignItems: "center" }}>
+              <span style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>Show:</span>
+              {(
+                [
+                  { key: "untranslated", label: "Untranslated" },
+                  { key: "ai-suggested", label: "AI Draft" },
+                  { key: "human-confirmed", label: "Confirmed" },
+                ] as const
+              ).map((bucket) => {
+                const active = categoryStatusFilter.has(bucket.key);
+                return (
+                  <button
+                    key={bucket.key}
+                    onClick={() => {
+                      const next = new Set(categoryStatusFilter);
+                      if (active) {
+                        if (next.size === 1) return; // keep at least one bucket selected
+                        next.delete(bucket.key);
+                      } else {
+                        next.add(bucket.key);
+                      }
+                      setCategoryStatusFilter(next);
+                      loadPage(viewMode, 0, categoryFilter ?? undefined, subcategoryFilter ?? undefined, next);
+                    }}
+                    style={{ opacity: active ? 1 : 0.5 }}
+                  >
+                    {active ? "✓ " : ""}
+                    {bucket.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           {rows.length > 0 && (
             <div style={{ margin: "0.5rem 0" }}>
               <button
@@ -1007,7 +1484,13 @@ function App() {
                       {outdated && <div style={{ color: "#e0a04c", fontSize: "0.7rem" }}>⚠ source changed</div>}
                       <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>{row.context_label}</div>
                     </div>
-                    <div style={{ color: "var(--text-dim)", overflowWrap: "break-word" }}>{row.source_text}</div>
+                    <div
+                      style={{ color: "var(--text-dim)", overflowWrap: "break-word", cursor: "pointer" }}
+                      title="Click to copy source text"
+                      onClick={(e) => { e.stopPropagation(); copySourceText(row.source_text); }}
+                    >
+                      {row.source_text}
+                    </div>
                     <div>
                       <textarea
                         value={drafts[row.key] ?? ""}
@@ -1015,15 +1498,19 @@ function App() {
                         onFocus={() => setSelectedRow(row)}
                         onBlur={() => saveDraft(row)}
                         placeholder="— not yet translated —"
-                        rows={4}
+                        rows={estimateRows(drafts[row.key] ?? "")}
                         style={{ width: "100%" }}
                       />
                     </div>
                     <div className="row-actions">
                       <button
                         className="action-btn"
-                        title={currentProject.ai_model ? "AI translate" : "No AI model configured for this project"}
-                        disabled={!currentProject.ai_model}
+                        title={
+                          currentProviderRequiresModel && !currentProject.ai_model
+                            ? "No model configured for this provider — set one in Project Settings"
+                            : "AI translate"
+                        }
+                        disabled={currentProviderRequiresModel && !currentProject.ai_model}
                         onClick={(e) => { e.stopPropagation(); aiTranslateRow(row); }}>
                         AI
                       </button>
@@ -1041,6 +1528,26 @@ function App() {
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {rows.length > 0 && (
+            <div style={{ margin: "0.5rem 0" }}>
+              <button
+                onClick={() =>
+                  loadPage(viewMode, Math.max(0, offset - BATCH_SIZE), categoryFilter ?? undefined, subcategoryFilter ?? undefined)
+                }
+                disabled={offset === 0}
+              >
+                ← Previous 100
+              </button>{" "}
+              <button
+                onClick={() =>
+                  loadPage(viewMode, offset + BATCH_SIZE, categoryFilter ?? undefined, subcategoryFilter ?? undefined)
+                }
+              >
+                Next 100 →
+              </button>
             </div>
           )}
         </div>
@@ -1151,10 +1658,27 @@ function App() {
           onProjectUpdated={(p) => setCurrentProject(p)}
           onDataChanged={async () => {
             await refreshCounts();
-            await loadCategories();
             await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
           }}
           onClose={() => setShowCollaboration(false)}
+        />
+      )}
+      {showProjectSettings && currentProject && (
+        <ProjectSettings
+          project={currentProject}
+          onProjectUpdated={(p) => setCurrentProject(p)}
+          onClose={() => setShowProjectSettings(false)}
+        />
+      )}
+      {showExportSummary && exportPreflight && currentProject && (
+        <ExportSummary
+          preflight={exportPreflight}
+          isMod={currentProject.project_type === "mod"}
+          sourceModName={currentProject.source_mod_name}
+          outputModName={currentProject.mod_name}
+          liveStatus={status}
+          onProceed={exportMod}
+          onClose={() => setShowExportSummary(false)}
         />
       )}
     </div>

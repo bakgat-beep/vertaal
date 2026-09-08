@@ -140,6 +140,8 @@ table {
   gap: 0.6rem;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
 }
 
 .filter-chips {
@@ -430,12 +432,6 @@ textarea::placeholder {
   margin-top: 1.5rem;
 }
 
-.toolbar {
-  flex-wrap: wrap;
-  row-gap: 0.5rem;
-  align-items: center;
-}
-
 .toolbar input[type="text"],
 .toolbar input[type="number"] {
   flex-shrink: 0;
@@ -448,4 +444,6 @@ textarea::placeholder {
 .toolbar button {
   flex-shrink: 0;
   white-space: nowrap;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.8rem;
 }

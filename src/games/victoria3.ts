@@ -2,8 +2,8 @@ import { join, documentDir } from "@tauri-apps/api/path";
 import type { GameAdapter } from "./types";
 import { findModLocRelativeParts } from "../import";
 
-export const EU5_DEFAULT_INSTALL_GUESS =
-  "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Europa Universalis V\\game";
+export const VICTORIA3_DEFAULT_INSTALL_GUESS =
+  "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Victoria 3\\game";
 
 const NATIVE_LANGUAGES: Record<string, string> = {
   "brazilian portuguese": "braz_por",
@@ -20,9 +20,11 @@ const NATIVE_LANGUAGES: Record<string, string> = {
 
 async function detectModPath(): Promise<string> {
   const docs = await documentDir();
-  return await join(docs, "Paradox Interactive", "Europa Universalis V", "mod");
+  return await join(docs, "Paradox Interactive", "Victoria 3", "mod");
 }
 
+// Victoria 3 uses the same "\game\<category>\..." layout as EU5, with
+// localization further split by language folder: \game\localization\english\...
 function extractCategory(fullPath: string): string {
   const marker = "\\game\\";
   const idx = fullPath.indexOf(marker);
@@ -37,8 +39,12 @@ function extractSubcategory(fullPath: string): string {
   if (idx === -1) return "general";
   const afterLoc = fullPath.substring(idx + marker.length);
   const parts = afterLoc.split("\\");
-  if (parts.length <= 2) return "general";
-  return parts[1];
+  if (parts.length > 2) {
+    return parts[1];
+  }
+  const fileName = parts[parts.length - 1];
+  const stripped = fileName.replace(/_l_english\.yml$/i, "");
+  return stripped || "general";
 }
 
 function toModRelativePath(fullPath: string, languageCode: string): string | null {
@@ -72,9 +78,9 @@ function toModExportRelativePath(fullPath: string, languageCode: string): string
   return [...parts, "replace", fileName].join("\\");
 }
 
-export const eu5Adapter: GameAdapter = {
-  id: "eu5",
-  displayName: "Europa Universalis 5",
+export const victoria3Adapter: GameAdapter = {
+  id: "victoria3",
+  displayName: "Victoria 3",
   sourceLanguage: "english",
   nativeLanguages: NATIVE_LANGUAGES,
   detectModPath,
@@ -86,9 +92,8 @@ export const eu5Adapter: GameAdapter = {
     name: modName,
     id: modName.toLowerCase().replace(/\s+/g, "-"),
     version: "0.1.0",
-    game_id: "eu5",
-    supported_game_version: "1.3.*",
-    short_description: `${targetLanguage} translation of Europa Universalis V.`,
+    supported_game_version: "1.*",
+    short_description: `${targetLanguage} translation of Victoria 3.`,
     tags: ["Translation"],
     relationships: [],
     game_custom_data: {},

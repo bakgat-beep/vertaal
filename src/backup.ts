@@ -22,6 +22,24 @@ export async function backupDatabase(destPath?: string): Promise<string> {
   return backupPath;
 }
 
+// Replaces the live database with a chosen backup file. Before doing so, it
+// takes its own automatic backup of whatever was live — so if the wrong file
+// gets picked, that's recoverable too. Returns the path of that safety copy.
+export async function restoreDatabase(sourcePath: string): Promise<string> {
+  const dataDir = await appDataDir();
+  const dbPath = await join(dataDir, DB_FILENAME);
+
+  const backupsDir = await join(dataDir, "backups");
+  await mkdir(backupsDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const preRestoreBackupPath = await join(backupsDir, `vertaal-backup-${timestamp}-pre-restore.db`);
+  await copyFile(dbPath, preRestoreBackupPath);
+  await cleanupOldBackups(backupsDir);
+
+  await copyFile(sourcePath, dbPath);
+  return preRestoreBackupPath;
+}
+
 async function cleanupOldBackups(backupsDir: string) {
   const entries = await readDir(backupsDir);
   const backupFiles = entries

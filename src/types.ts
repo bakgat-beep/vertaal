@@ -22,6 +22,14 @@ export interface Project {
   install_path: string | null;
   ai_model: string | null;
   translation_provider_id: string | null;
+  retry_delay_ms: number | null;
+  google_translate_delay_ms: number | null;
+  source_language_code_override: string | null;
+  target_language_code_override: string | null;
+  project_type: "vanilla" | "mod";
+  parent_game_id: string;
+  source_mod_name: string | null;
+  source_mod_identifier: string | null;
 }
 export interface TranslationRequest {
   text: string;
@@ -36,14 +44,15 @@ export interface TranslationResult {
 }
 
 export interface TranslationProvider {
-  id: string;               // "ollama", "deepl", "openai-compatible", etc.
+  id: string;
   displayName: string;
   isLocal: boolean;
   supportsGlossary: boolean;
   supportsBatch: boolean;
+  requiresModel: boolean;
 
   translate(request: TranslationRequest, config: ProviderConfig): Promise<TranslationResult>;
-  detectAvailability?(config: ProviderConfig): Promise<boolean>; // e.g. "is Ollama running", "is the API key valid"
+  detectAvailability?(config: ProviderConfig): Promise<boolean>;
   listModels?(config: ProviderConfig): Promise<string[]>;
 }
 

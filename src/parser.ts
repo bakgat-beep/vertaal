@@ -20,7 +20,8 @@ export interface ProtectedText {
 }
 
 export function protectTokens(source: string): ProtectedText {
-  const tokenPattern = /#!|#[A-Za-z_][A-Za-z0-9_]*|\$[^$]+\$|\[[^\]]+\]|@\S+!/g;
+const tokenPattern =
+    /#!|#tooltippable;tooltip:\S+|#tooltip:\S+|#[A-Za-z_][A-Za-z0-9_]*(:\d+)?(;[A-Za-z_][A-Za-z0-9_]*(:\d+)?)*|§!|§[A-Za-z0-9_]|£[^£]+£|£\S+|\$\$|\$[^$]+\$|\[[^\]]+\]|@[A-Z]{2,4}\b|@\S+!|\\n|\\t/g;
   const tokens: string[] = [];
   const text = source.replace(tokenPattern, (match) => {
     tokens.push(match);
@@ -37,9 +38,6 @@ export function restoreTokens(translatedText: string, tokens: string[]): string 
   return result;
 }
 
-// Confirms the translation didn't drop, duplicate, or mangle any protected
-// token placeholders — the one automated check that catches a model breaking
-// game-critical syntax like $VAR$ or [Function] codes.
 export function validateTokensPreserved(translatedText: string, tokenCount: number): boolean {
   const matches = translatedText.match(/__TOKEN_\d+__/g) ?? [];
   if (matches.length !== tokenCount) return false;

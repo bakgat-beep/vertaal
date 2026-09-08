@@ -15,8 +15,6 @@ export async function findLocFiles(dirPath: string, sourceLanguage: string): Pro
   return found;
 }
 
-// Cheap check for the welcome screen: does this folder (or something inside it)
-// actually contain localisation files, before letting someone create a project on it.
 export async function validateInstallPath(dirPath: string, sourceLanguage: string): Promise<boolean> {
   try {
     const files = await findLocFiles(dirPath, sourceLanguage);
@@ -24,4 +22,36 @@ export async function validateInstallPath(dirPath: string, sourceLanguage: strin
   } catch {
     return false;
   }
+}
+
+export function extractModCategory(fullPath: string): string {
+  const marker = /\\locali[sz]ation\\/i;
+  const match = fullPath.match(marker);
+  if (!match) return "general";
+  const idx = fullPath.search(marker);
+  const afterLoc = fullPath.substring(idx + match[0].length);
+  const parts = afterLoc.split("\\"); // [<lang>, ...subfolders?, filename]
+  if (parts.length > 2) return parts[1];
+  const fileName = parts[parts.length - 1];
+  const stripped = fileName.replace(/_l_[a-z_]+\.yml$/i, "").replace(/_/g, " ");
+  return stripped || "general";
+}
+
+export function extractModSubcategory(fullPath: string): string {
+  const marker = /\\locali[sz]ation\\/i;
+  const match = fullPath.match(marker);
+  if (!match) return "general";
+  const idx = fullPath.search(marker);
+  const afterLoc = fullPath.substring(idx + match[0].length);
+  const parts = afterLoc.split("\\");
+  if (parts.length > 3) return parts[2];
+  return "general";
+}
+
+export function findModLocRelativeParts(fullPath: string): string[] | null {
+  const marker = /\\(locali[sz]ation)\\/i;
+  const match = fullPath.match(marker);
+  if (!match) return null;
+  const idx = fullPath.search(marker);
+  return fullPath.substring(idx + 1).split("\\");
 }

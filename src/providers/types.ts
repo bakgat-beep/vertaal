@@ -23,6 +23,7 @@ export interface TranslationProvider {
   isLocal: boolean;
   supportsGlossary: boolean;
   supportsBatch: boolean;
+  requiresModel: boolean;
 
   translate(request: TranslationRequest, config: ProviderConfig): Promise<TranslationResult>;
   detectAvailability?(config: ProviderConfig): Promise<boolean>;

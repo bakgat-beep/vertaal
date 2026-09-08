@@ -85,6 +85,24 @@ pub fn run() {
             sql: include_str!("../migrations/0013_translation_providers.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
+        tauri_plugin_sql::Migration {
+            version: 14,
+            description: "add_translation_delays",
+            sql: include_str!("../migrations/0014_translation_delays.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+        tauri_plugin_sql::Migration {
+            version: 15,
+            description: "add_language_code_overrides",
+            sql: include_str!("../migrations/0015_language_overrides.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+        tauri_plugin_sql::Migration {
+            version: 16,
+            description: "add_mod_projects",
+            sql: include_str!("../migrations/0016_mod_projects.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
