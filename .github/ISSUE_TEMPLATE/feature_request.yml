@@ -1,0 +1,23 @@
+name: Feature Request
+description: Suggest something Vertaal should do that it doesn't yet
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the actual task or workflow, not just the feature you're imagining as the solution — sometimes there's a simpler answer than what's being asked for.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Vertaal to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Any workarounds you're currently using?
