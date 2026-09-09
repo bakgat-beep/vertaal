@@ -30,6 +30,8 @@ export interface Project {
   parent_game_id: string;
   source_mod_name: string | null;
   source_mod_identifier: string | null;
+  git_repo_path: string | null;
+  git_remote_url: string | null;
 }
 export interface TranslationRequest {
   text: string;

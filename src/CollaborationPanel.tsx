@@ -23,9 +23,11 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
   const [hasToken, setHasToken] = useState(false);
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [gitAvailable, setGitAvailable] = useState<string | null | "checking">("checking");
 
   useEffect(() => {
     getGithubToken().then((t) => setHasToken(!!t));
+    checkGitAvailable().then(setGitAvailable);
   }, []);
 
   function exportFileName() {
@@ -147,6 +149,16 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
             Sync this project's translations with a Git repository so others can contribute.
           </p>
         </div>
+
+        {gitAvailable === null && (
+          <p style={{ color: "#e05a5a" }}>
+            ⚠ Git wasn't found on this computer. Install it from{" "}
+            <a href="https://git-scm.com/downloads" target="_blank" rel="noreferrer">
+              git-scm.com
+            </a>{" "}
+            before using any of the options below — they all require it.
+          </p>
+        )}
 
         <div className="form-row">
           <div className="form-label">Local folder</div>

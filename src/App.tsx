@@ -18,7 +18,6 @@ import GlossaryManager from "./GlossaryManager";
 import { loadHistory, type HistoryEntry } from "./history";
 import { save } from "@tauri-apps/plugin-dialog";
 import { documentDir } from "@tauri-apps/api/path";
-import { checkGitAvailable } from "./git";
 import CollaborationPanel from "./CollaborationPanel";
 import { TRANSLATION_PROVIDERS } from "./providers";
 import { getProviderCredentials } from "./providers/credentials.ts";
@@ -45,7 +44,6 @@ const BATCH_SIZE = 100;
 
 function App() {
   const [status, setStatus] = useState("");
-  const [count, setCount] = useState<number | null>(null);
 
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
 
@@ -169,15 +167,9 @@ function App() {
         totalStrings++;
       }
     }
-    const countRows = (await db.select(
-      "SELECT COUNT(*) as total FROM strings WHERE game_id = $1",
-      [currentProject.game_id]
-    )) as { total: number }[];
-    setCount(countRows[0].total);
     await refreshCounts();
     setStatus(`Import complete. Processed ${files.length} files, ${totalStrings} strings this run.`);
   }
-
    function buildStatusClause(filter: Set<string>): string {
     const clauses: string[] = [];
     if (filter.has("untranslated")) clauses.push("(t.status IS NULL OR t.status IN ('untranslated', 'human-draft'))");
@@ -1037,12 +1029,6 @@ function App() {
     refreshCounts();
     await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
     setStatus(`Marked ${matches.length} code-only strings as AI draft.`);
-  }
-
-
-  async function testGit() {
-    const version = await checkGitAvailable();
-    setStatus(version ? `Git detected: ${version}` : "Git not found or not runnable from the app.");
   }
 
   async function batchTranslateOvernight() {
