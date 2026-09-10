@@ -29,6 +29,12 @@ jobs:
     # Windows-style paths), so this only builds a Windows installer.
     runs-on: windows-latest
 
+    # tauri-action needs write access to create/update the GitHub Release
+    # and upload the installer to it — GITHUB_TOKEN defaults to read-only
+    # on newer repos, so this has to be requested explicitly.
+    permissions:
+      contents: write
+
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -36,7 +42,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
