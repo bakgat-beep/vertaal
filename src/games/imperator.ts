@@ -2,9 +2,6 @@ import { join, documentDir } from "@tauri-apps/api/path";
 import type { GameAdapter } from "./types";
 import { findModLocRelativeParts } from "../import";
 
-export const IMPERATOR_DEFAULT_INSTALL_GUESS =
-  "C:\\Program Files (x86)\\Steam\\steamapps\\common\\ImperatorRome\\game";
-
 const NATIVE_LANGUAGES: Record<string, string> = {
   french: "french",
   german: "german",

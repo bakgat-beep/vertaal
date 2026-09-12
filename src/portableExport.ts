@@ -10,6 +10,13 @@ interface PortableTranslation {
   status: string;
   translated_by: string | null;
   updated_at: string | null;
+  // The hash of the source text as of when this translation was made
+  // (translations.source_hash_at_translation), not the current live hash.
+  // Lets a collaborator — including a future mobile app — detect that a
+  // translation was made against an older version of the source string,
+  // by comparing this against their own local strings.source_text_hash,
+  // the same way outdated-detection already works within a single install.
+  source_text_hash: string | null;
 }
 
 interface PortableGlossaryTerm {
@@ -32,7 +39,8 @@ export async function exportPortableProjectData(project: Project, destPath?: str
 
   const translations = (await db.select(
     `SELECT s.key as key, s.source_text as source_text, t.translated_text as translated_text,
-            t.status as status, t.translated_by as translated_by, t.updated_at as updated_at
+            t.status as status, t.translated_by as translated_by, t.updated_at as updated_at,
+            t.source_hash_at_translation as source_text_hash
      FROM strings s
      JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
      WHERE s.game_id = $1 AND t.target_language = $2

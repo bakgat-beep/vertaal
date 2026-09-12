@@ -1,3 +1,10 @@
+// Ollama *model discovery* for the Welcome Screen's model dropdown (name +
+// size, so the user can see what's installed before picking one).
+//
+// This is a different concern from src/providers/ollama.ts, which is the
+// actual TranslationProvider that sends translation requests to Ollama.
+// That file reuses detectInstalledModels() below for its own model listing,
+// so the "ask Ollama what's installed" logic only lives in one place.
 export interface OllamaModel {
   name: string;
   sizeGb: number;

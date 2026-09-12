@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/badge/license-GPLv3-blue.svg"></a>
+<a href="LICENSE"><img alt="License: GPL v2" src="https://img.shields.io/badge/license-GPLv2-blue.svg"></a>
 </p>
 
 > **Not affiliated with Paradox Interactive.** Vertaal is an independent, fan-made tool. All game names, trademarks, and localization data belong to their respective owners — Vertaal only reads and translates text you already own a legal copy of.
@@ -83,4 +83,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the project's arch
 
 ## License
 
-[GNU GPL v3](LICENSE). Contributions are welcome under the same license.
+[GNU GPL v2](LICENSE). Contributions are welcome under the same license.

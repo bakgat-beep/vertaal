@@ -1,14 +1,12 @@
 import WelcomeScreen from "./WelcomeScreen";
-import { findLocFiles, extractModCategory, extractModSubcategory } from "./import";
+import { importProjectFolder } from "./import";
 import { useState, useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile, mkdir, writeFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import "./App.css";
 import { getDb } from "./db";
 import type { EditorRow, Project } from "./types";
-import { parseLocFile, protectTokens, restoreTokens, validateTokensPreserved } from "./parser";
-import { loadGlossaryTerms, matchGlossaryTerms, buildGlossaryInstructions } from "./glossary";
+import { protectTokens } from "./parser";
 import { GAME_ADAPTERS } from "./games";
 import { getContributorName, setContributorName } from "./settings";
 import { backupDatabase } from "./backup";
@@ -20,11 +18,11 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { documentDir } from "@tauri-apps/api/path";
 import CollaborationPanel from "./CollaborationPanel";
 import { TRANSLATION_PROVIDERS } from "./providers";
-import { getProviderCredentials } from "./providers/credentials.ts";
 import ProjectSettings from "./ProjectSettings";
-import { buildCompanionDescriptor } from "./modExport";
+import { exportMod } from "./export";
+import { translateAndSave, translateWithRetry } from "./translate";
 import { openPath } from "@tauri-apps/plugin-opener";
-import ExportSummary, { type ExportPreflight } from "./ExportSummary";
+import ExportSummary, { type ExportPreflight, type ExportOutcome } from "./ExportSummary";
 
 type ViewMode = "all" | "untranslated" | "translated" | "aidraft" | "outdated" | "issues" | "search" | "category" | "subcategory";
 
@@ -127,49 +125,23 @@ function App() {
     if (!currentProject) return;
     const gm = adapter();
     if (!gm) return;
-    const isMod = currentProject.project_type === "mod";
-    setStatus("Waiting for folder selection...");
-    const folderPath = await open({ directory: true, multiple: false, defaultPath: currentProject.install_path ?? undefined });
-    if (!folderPath) {
+    const outcome = await importProjectFolder(currentProject, gm, setStatus);
+    if (outcome.status === "cancelled") {
       setStatus("No folder selected.");
       return;
     }
-    setStatus("Scanning folder for localization files... (please wait!)");
-    const files = await findLocFiles(folderPath as string, currentProject.source_language);
-    if (files.length === 0) {
+    if (outcome.status === "no-files-found") {
       setStatus(`No _l_${currentProject.source_language}.yml files found in that folder.`);
       return;
     }
-    const db = await getDb();
-    const gamesDisplayName = isMod
-      ? `${gm.displayName} — ${currentProject.source_mod_name ?? "Mod"}`
-      : gm.displayName;
-    await db.execute(
-      "INSERT OR REPLACE INTO games (game_id, display_name, detected_version) VALUES ($1, $2, $3)",
-      [currentProject.game_id, gamesDisplayName, "1.0"]
-    );
-    let totalStrings = 0;
-    for (const filePath of files) {
-      setStatus(`Reading ${filePath}...`);
-      const content = await readTextFile(filePath);
-      const parsed = parseLocFile(content);
-      const fileName = filePath.split("\\").pop() ?? filePath;
-      const contextLabel = fileName.replace(`_l_${currentProject.source_language}.yml`, "").replace(/_/g, " ");
-      const category = isMod ? extractModCategory(filePath) : gm.extractCategory(filePath);
-      const subcategory = isMod ? extractModSubcategory(filePath) : gm.extractSubcategory(filePath);
-      for (const item of parsed) {
-        const hash = String(item.text.length) + "-" + item.text.slice(0, 20);
-        await db.execute(
-          `INSERT OR REPLACE INTO strings (key, game_id, source_text, source_text_hash, file_path, context_label, category, subcategory)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [item.key, currentProject.game_id, item.text, hash, filePath, contextLabel, category, subcategory]
-        );
-        totalStrings++;
-      }
+    if (outcome.status === "error") {
+      setStatus(`Import failed: ${outcome.error}`);
+      return;
     }
     await refreshCounts();
-    setStatus(`Import complete. Processed ${files.length} files, ${totalStrings} strings this run.`);
+    setStatus(`Import complete. Processed ${outcome.filesProcessed} files, ${outcome.stringsProcessed} strings this run.`);
   }
+  
    function buildStatusClause(filter: Set<string>): string {
     const clauses: string[] = [];
     if (filter.has("untranslated")) clauses.push("(t.status IS NULL OR t.status IN ('untranslated', 'human-draft'))");
@@ -494,15 +466,6 @@ function App() {
 
   // --- Mod export ---
 
-  async function writeTextFileWithBom(path: string, content: string) {
-    const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
-    const textBytes = new TextEncoder().encode(content);
-    const combined = new Uint8Array(bom.length + textBytes.length);
-    combined.set(bom, 0);
-    combined.set(textBytes, bom.length);
-    await writeFile(path, combined);
-  }
-
   async function openOutputFolder() {
     if (!currentProject?.output_path) return;
     try {
@@ -530,202 +493,9 @@ function App() {
     setShowExportSummary(true);
   }
 
-  type ExportOutcome =
-    | { status: "ok"; stringsWritten: number; filesWritten: number; destPath: string }
-    | { status: "cancelled" }
-    | { status: "error"; error: string };
-
-  async function exportMod(): Promise<ExportOutcome> {
+  async function handleExportMod(): Promise<ExportOutcome> {
     if (!currentProject) return { status: "error", error: "No project loaded." };
-    if (currentProject.project_type === "mod") {
-      return exportModCompanion();
-    }
-    const gm = adapter();
-    if (!gm) return { status: "error", error: "Could not resolve this project's game." };
-
-    try {
-      setStatus("Choose a folder to export the mod into...");
-      const defaultDest = currentProject.output_path ?? (await gm.detectModPath());
-      const destFolder = await open({ directory: true, multiple: false, defaultPath: defaultDest });
-      if (!destFolder) return { status: "cancelled" };
-
-      const modRoot = await join(destFolder as string, currentProject.mod_name.toLowerCase().replace(/\s+/g, "-"));
-
-      setStatus("Gathering translated strings...");
-      const db = await getDb();
-
-      const translated = (await db.select(
-        `SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
-         FROM strings s
-         JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-         WHERE t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
-           AND s.game_id = $1 AND t.target_language = $2`,
-        [currentProject.game_id, currentProject.target_language]
-      )) as { key: string; file_path: string; translated_text: string }[];
-
-      if (translated.length === 0) {
-        return { status: "error", error: "No confirmed translations to export yet." };
-      }
-
-      const nativeCode = gm.nativeLanguages[currentProject.target_language.toLowerCase()];
-      const languageCode = nativeCode ?? currentProject.source_language;
-      if (nativeCode) {
-        setStatus(`Exporting as a native "${currentProject.target_language}" language mod...`);
-      }
-
-      const byFile: Record<string, { key: string; translated_text: string }[]> = {};
-      for (const row of translated) {
-        const relPath = gm.toModRelativePath(row.file_path, languageCode);
-        if (!relPath) continue;
-        if (!byFile[relPath]) byFile[relPath] = [];
-        byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
-      }
-
-      setStatus(`Writing ${Object.keys(byFile).length} localization files...`);
-
-      for (const [relPath, entries] of Object.entries(byFile)) {
-        const fullOutputPath = await join(modRoot, relPath);
-        const folderPath = fullOutputPath.substring(0, fullOutputPath.lastIndexOf("\\"));
-        await mkdir(folderPath, { recursive: true });
-
-        let fileContent = `l_${languageCode}:\n`;
-        for (const entry of entries) {
-          const safeText = entry.translated_text.replace(/"/g, '\\"');
-          fileContent += ` ${entry.key}: "${safeText}"\n`;
-        }
-        await writeTextFileWithBom(fullOutputPath, fileContent);
-      }
-
-      await mkdir(await join(modRoot, ".metadata"), { recursive: true });
-      await writeTextFile(
-        await join(modRoot, ".metadata", "metadata.json"),
-        JSON.stringify(gm.buildMetadata(currentProject.mod_name, currentProject.target_language), null, 2)
-      );
-
-      const placeholderPngBase64 =
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-      const pngBytes = Uint8Array.from(atob(placeholderPngBase64), (c) => c.charCodeAt(0));
-      await writeFile(await join(modRoot, ".metadata", "thumbnail.png"), pngBytes);
-
-      await writeTextFile(await join(modRoot, "descriptor.mod"), gm.buildDescriptor(currentProject.mod_name));
-
-      if (gm.buildOuterModPointer) {
-        const pointer = gm.buildOuterModPointer(currentProject.mod_name, modRoot);
-        await writeTextFile(await join(destFolder as string, pointer.fileName), pointer.content);
-      }
-
-      const db2 = await getDb();
-      await db2.execute("UPDATE projects SET output_path = $1 WHERE id = $2", [destFolder, currentProject.id]);
-
-      return {
-        status: "ok",
-        stringsWritten: translated.length,
-        filesWritten: Object.keys(byFile).length,
-        destPath: modRoot,
-      };
-    } catch (err) {
-      return { status: "error", error: String(err) };
-    }
-  }
-
-  async function exportModCompanion(): Promise<ExportOutcome> {
-    if (!currentProject) return { status: "error", error: "No project loaded." };
-    const gm = adapter();
-    if (!gm) return { status: "error", error: "Could not resolve this project's game." };
-    if (!gm.toModExportRelativePath) {
-      return { status: "error", error: `Mod export isn't supported yet for ${gm.displayName}.` };
-    }
-    if (!currentProject.source_mod_name) {
-      return { status: "error", error: "This project is missing the source mod's name — check Project Settings." };
-    }
-
-    try {
-      setStatus("Choose a folder to export the companion mod into...");
-      const defaultDest = currentProject.output_path ?? (await gm.detectModPath());
-      const destFolder = await open({ directory: true, multiple: false, defaultPath: defaultDest });
-      if (!destFolder) return { status: "cancelled" };
-
-      const modRoot = await join(destFolder as string, currentProject.mod_name.toLowerCase().replace(/\s+/g, "-"));
-
-      setStatus("Gathering translated strings...");
-      const db = await getDb();
-
-      const translated = (await db.select(
-        `SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
-         FROM strings s
-         JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-         WHERE t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
-           AND s.game_id = $1 AND t.target_language = $2`,
-        [currentProject.game_id, currentProject.target_language]
-      )) as { key: string; file_path: string; translated_text: string }[];
-
-      if (translated.length === 0) {
-        return { status: "error", error: "No confirmed translations to export yet." };
-      }
-
-      const nativeCode = gm.nativeLanguages[currentProject.target_language.toLowerCase()];
-      const languageCode = nativeCode ?? currentProject.source_language;
-      if (nativeCode) {
-        setStatus(`Exporting as a native "${currentProject.target_language}" language mod...`);
-      }
-
-      const byFile: Record<string, { key: string; translated_text: string }[]> = {};
-      for (const row of translated) {
-        const relPath = gm.toModExportRelativePath(row.file_path, languageCode);
-        if (!relPath) continue;
-        if (!byFile[relPath]) byFile[relPath] = [];
-        byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
-      }
-
-      setStatus(`Writing ${Object.keys(byFile).length} localization files...`);
-
-      for (const [relPath, entries] of Object.entries(byFile)) {
-        const fullOutputPath = await join(modRoot, relPath);
-        const folderPath = fullOutputPath.substring(0, fullOutputPath.lastIndexOf("\\"));
-        await mkdir(folderPath, { recursive: true });
-
-        let fileContent = `l_${languageCode}:\n`;
-        for (const entry of entries) {
-          const safeText = entry.translated_text.replace(/"/g, '\\"');
-          fileContent += ` ${entry.key}: "${safeText}"\n`;
-        }
-        await writeTextFileWithBom(fullOutputPath, fileContent);
-      }
-
-      await mkdir(await join(modRoot, ".metadata"), { recursive: true });
-      const metadata = {
-        ...gm.buildMetadata(currentProject.mod_name, currentProject.target_language),
-        short_description: `${currentProject.target_language} translation of the mod "${currentProject.source_mod_name}".`,
-      };
-      await writeTextFile(await join(modRoot, ".metadata", "metadata.json"), JSON.stringify(metadata, null, 2));
-
-      const placeholderPngBase64 =
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-      const pngBytes = Uint8Array.from(atob(placeholderPngBase64), (c) => c.charCodeAt(0));
-      await writeFile(await join(modRoot, ".metadata", "thumbnail.png"), pngBytes);
-
-      await writeTextFile(
-        await join(modRoot, "descriptor.mod"),
-        buildCompanionDescriptor(currentProject.mod_name, currentProject.source_mod_name)
-      );
-
-      if (gm.buildOuterModPointer) {
-        const pointer = gm.buildOuterModPointer(currentProject.mod_name, modRoot);
-        await writeTextFile(await join(destFolder as string, pointer.fileName), pointer.content);
-      }
-
-      const db2 = await getDb();
-      await db2.execute("UPDATE projects SET output_path = $1 WHERE id = $2", [destFolder, currentProject.id]);
-
-      return {
-        status: "ok",
-        stringsWritten: translated.length,
-        filesWritten: Object.keys(byFile).length,
-        destPath: modRoot,
-      };
-    } catch (err) {
-      return { status: "error", error: String(err) };
-    }
+    return exportMod(currentProject, setStatus);
   }
 
   async function refreshCounts() {
@@ -759,144 +529,9 @@ function App() {
 
   // --- AI translation ---
 
-  function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  async function translateAndSave(key: string, gameId: string, sourceText: string): Promise<{ ok: boolean; error?: string }> {
-    if (!currentProject) return { ok: false, error: "No project loaded." };
-    const provider = TRANSLATION_PROVIDERS[currentProject.translation_provider_id ?? "ollama"];
-    if (!provider) {
-      return { ok: false, error: `No translation provider registered for "${currentProject.translation_provider_id}".` };
-    }
-    if (provider.requiresModel && !currentProject.ai_model) {
-      return { ok: false, error: `No model configured for ${provider.displayName} — set one in Project Settings.` };
-    }
-    try {
-      const { text: protectedText, tokens } = protectTokens(sourceText);
-      const terms = await loadGlossaryTerms(gameId, currentProject.target_language);
-      const matchedTerms = matchGlossaryTerms(sourceText, terms);
-      const glossaryInstruction =
-        matchedTerms.length > 0 ? buildGlossaryInstructions(sourceText, matchedTerms).join("\n") : undefined;
-
-      const credentials = await getProviderCredentials(provider.id);
-
-      if (provider.id === "google-translate") {
-        await sleep(currentProject.google_translate_delay_ms ?? 500);
-      }
-
-      let rawTranslation: string;
-      try {
-        const result = await provider.translate(
-          {
-            text: protectedText,
-            sourceLanguage: currentProject.source_language_code_override?.trim() || currentProject.source_language,
-            targetLanguage: currentProject.target_language_code_override?.trim() || currentProject.target_language,
-            glossaryInstruction,
-          },
-          {
-            providerId: provider.id,
-            model: currentProject.ai_model,
-            apiKey: credentials.apiKey,
-            baseUrl: credentials.baseUrl,
-          }
-        );
-        rawTranslation = result.translatedText.trim();
-      } catch (err) {
-        return { ok: false, error: `Provider error: ${err}` };
-      }
-
-      const gm = GAME_ADAPTERS[currentProject.parent_game_id];
-      if (gm?.forbiddenCharacters) {
-        for (const [bad, good] of Object.entries(gm.forbiddenCharacters)) {
-          rawTranslation = rawTranslation.split(bad).join(good);
-        }
-      }
-
-      const db = await getDb();
-      const attribution = currentProject.ai_model ?? provider.displayName;
-
-      const currentHashRow = (await db.select(
-        "SELECT source_text_hash FROM strings WHERE key = $1 AND game_id = $2",
-        [key, gameId]
-      )) as { source_text_hash: string }[];
-      const currentHash = currentHashRow[0]?.source_text_hash ?? null;
-
-      if (!validateTokensPreserved(rawTranslation, tokens.length)) {
-        await db.execute(
-          `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
-           VALUES ($1, $2, $3, '', 'untranslated', $4, datetime('now'), 1, $5)`,
-          [key, gameId, currentProject.target_language, attribution, currentHash]
-        );
-        return { ok: false, error: "AI response did not preserve required game codes/tokens — flagged for manual review." };
-      }
-
-      const finalTranslation = restoreTokens(rawTranslation, tokens);
-
-      await db.execute(
-        `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
-         VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
-        [key, gameId, currentProject.target_language, finalTranslation, attribution, key, gameId, currentProject.target_language, currentHash]
-      );
-
-      await db.execute(
-        `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [key, gameId, currentProject.target_language, "", finalTranslation, attribution]
-      );
-
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: `Unexpected error: ${err}` };
-    }
-  }
-
-  async function translateWithRetry(
-    key: string,
-    gameId: string,
-    sourceText: string,
-    maxAttempts: number = 3,
-    retryDelayMs: number = currentProject?.retry_delay_ms ?? 2000
-    ): Promise<{ ok: boolean; error?: string; attempts: number }> {
-    let lastResult: { ok: boolean; error?: string } = { ok: false, error: "No attempts made." };
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      if (stopRequestedRef.current) {
-        return { ok: false, error: "Stopped by user.", attempts: attempt - 1 };
-      }
-      lastResult = await translateAndSave(key, gameId, sourceText);
-      if (lastResult.ok) {
-        return { ok: true, attempts: attempt };
-      }
-      if (attempt < maxAttempts) {
-        await sleep(retryDelayMs);
-      }
-    }
-
-    if (currentProject) {
-      try {
-        const db = await getDb();
-        const currentHashRow = (await db.select(
-          "SELECT source_text_hash FROM strings WHERE key = $1 AND game_id = $2",
-          [key, gameId]
-        )) as { source_text_hash: string }[];
-        const currentHash = currentHashRow[0]?.source_text_hash ?? null;
-
-        await db.execute(
-          `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
-           VALUES ($1, $2, $3, '', 'untranslated', $4, datetime('now'), 1, $5)`,
-          [key, gameId, currentProject.target_language, currentProject.ai_model ?? "", currentHash]
-        );
-      } catch {
-      }
-    }
-
-    return { ok: false, error: `Failed after ${maxAttempts} attempts: ${lastResult.error ?? "unknown error"}`, attempts: maxAttempts };
-  }
-
   async function aiTranslateRow(row: EditorRow) {
     setStatus(`Requesting AI translation for ${row.key}...`);
-    const result = await translateAndSave(row.key, row.game_id, row.source_text);
+    const result = await translateAndSave(currentProject, row.key, row.game_id, row.source_text);
     if (!result.ok) {
       setStatus(`AI translation failed for ${row.key}: ${result.error ?? "unknown error"}`);
       return;
@@ -924,7 +559,7 @@ function App() {
       if (stopRequestedRef.current) break;
       const row = targets[i];
       setStatus(`Translating page: ${i + 1}/${targets.length} — ${row.key}`);
-      const result = await translateAndSave(row.key, row.game_id, row.source_text);
+      const result = await translateWithRetry(currentProject, row.key, row.game_id, row.source_text, () => stopRequestedRef.current);
       if (result.ok) succeeded++;
       else lastError = result.error ?? "unknown error";
       setBatchProgress({ done: i + 1, total: targets.length });
@@ -1071,7 +706,7 @@ function App() {
 
       const row = next[0];
       setStatus(`Overnight batch: ${done + 1}/${targetCount} — ${row.key}`);
-      const result = await translateWithRetry(row.key, row.game_id, row.source_text);
+      const result = await translateWithRetry(currentProject, row.key, row.game_id, row.source_text, () => stopRequestedRef.current);
 
       if (result.ok) {
         distinctFailureStreak = 0;
@@ -1112,7 +747,7 @@ function App() {
     for (const row of targets) {
       if (stopRequestedRef.current) break;
       setStatus(`Re-running AI: ${done + 1}/${targets.length} — ${row.key}`);
-      const result = await translateWithRetry(row.key, row.game_id, row.source_text);
+      const result = await translateWithRetry(currentProject, row.key, row.game_id, row.source_text, () => stopRequestedRef.current);
       if (result.ok) {
         consecutiveFailures = 0;
         done++;
@@ -1650,7 +1285,7 @@ function App() {
           sourceModName={currentProject.source_mod_name}
           outputModName={currentProject.mod_name}
           liveStatus={status}
-          onProceed={exportMod}
+          onProceed={handleExportMod}
           onClose={() => setShowExportSummary(false)}
         />
       )}

@@ -1,4 +1,11 @@
+// The TranslationProvider for Ollama (sends actual translation requests).
+//
+// Model *discovery* (what's installed) is handled by detectInstalledModels()
+// in src/ollama.ts — reused here for listModels() so there's only one place
+// that knows how to ask Ollama what's installed and filter it down to
+// translation-relevant models, instead of two near-identical copies.
 import type { TranslationProvider, TranslationRequest, TranslationResult, ProviderConfig } from "./types";
+import { detectInstalledModels } from "../ollama";
 
 async function translate(request: TranslationRequest, config: ProviderConfig): Promise<TranslationResult> {
   if (!config.model) throw new Error("No Ollama model configured.");
@@ -28,6 +35,12 @@ async function translate(request: TranslationRequest, config: ProviderConfig): P
   return { translatedText: data.message.content.trim(), raw: data };
 }
 
+// Deliberately kept separate from detectInstalledModels(): this only checks
+// that the Ollama service itself is reachable, regardless of whether any
+// translation-relevant model is installed yet. Folding this into the model
+// list would change its meaning (available vs. "available AND has a
+// translategemma model"), which is a bigger behavior change than this
+// cleanup is meant to make.
 async function detectAvailability(): Promise<boolean> {
   try {
     const response = await fetch("http://localhost:11434/api/tags");
@@ -38,16 +51,8 @@ async function detectAvailability(): Promise<boolean> {
 }
 
 async function listModels(): Promise<string[]> {
-  try {
-    const response = await fetch("http://localhost:11434/api/tags");
-    if (!response.ok) return [];
-    const data = await response.json();
-    return (data.models ?? [])
-      .filter((m: { name: string }) => m.name.startsWith("translategemma"))
-      .map((m: { name: string }) => m.name);
-  } catch {
-    return [];
-  }
+  const models = await detectInstalledModels();
+  return models.map((m) => m.name);
 }
 
 export const ollamaProvider: TranslationProvider = {

@@ -9,6 +9,9 @@ interface PortableTranslation {
   status: string;
   translated_by: string | null;
   updated_at: string | null;
+  // Optional: absent in exports from before this field existed. See the
+  // matching comment in portableExport.ts for what it means.
+  source_text_hash?: string | null;
 }
 interface PortableGlossaryTerm {
   english_term: string;
@@ -72,9 +75,18 @@ export async function importPortableProjectData(project: Project, filePath: stri
     }
 
     await db.execute(
-      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE((SELECT flagged FROM translations WHERE string_key = $1 AND game_id = $2 AND target_language = $3), 0))`,
-      [t.key, project.game_id, project.target_language, t.translated_text, t.status, t.translated_by, t.updated_at ?? new Date().toISOString()]
+      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_hash_at_translation, flagged)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE((SELECT flagged FROM translations WHERE string_key = $1 AND game_id = $2 AND target_language = $3), 0))`,
+      [
+        t.key,
+        project.game_id,
+        project.target_language,
+        t.translated_text,
+        t.status,
+        t.translated_by,
+        t.updated_at ?? new Date().toISOString(),
+        t.source_text_hash ?? null,
+      ]
     );
 
     await db.execute(

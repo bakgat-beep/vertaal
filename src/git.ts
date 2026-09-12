@@ -1,13 +1,25 @@
 import { Command } from "@tauri-apps/plugin-shell";
 
+function redactCredentials(args: string[], output: string): string {
+  let redacted = output;
+  for (const arg of args) {
+    const match = arg.match(/^https:\/\/([^@/]+)@/);
+    if (match) {
+      const credential = match[1];
+      redacted = redacted.split(credential).join("***");
+    }
+  }
+  return redacted;
+}
+
 async function runGit(args: string[], cwd: string): Promise<{ ok: boolean; output: string }> {
   try {
     const cmd = Command.create("run-git", args, { cwd });
     const result = await cmd.execute();
-    const output = (result.stdout + result.stderr).trim();
+    const output = redactCredentials(args, (result.stdout + result.stderr).trim());
     return { ok: result.code === 0, output };
   } catch (err) {
-    return { ok: false, output: String(err) };
+    return { ok: false, output: redactCredentials(args, String(err)) };
   }
 }
 

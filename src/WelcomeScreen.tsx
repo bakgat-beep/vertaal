@@ -92,6 +92,8 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
   const [baseUrl, setBaseUrl] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
 
+  const [duplicateProjectNotice, setDuplicateProjectNotice] = useState("");
+  
   useEffect(() => {
     loadRecentProjects();
   }, []);
@@ -114,6 +116,7 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
     setSourceModIdentifier(null);
     setModDescriptorFormat(null);
     setAutoDetectNote("");
+    setDuplicateProjectNotice("");
     if (projectType === "vanilla") {
       tryAutoDetectInstallPath(selectedGameId, newGm.sourceLanguage);
     }
@@ -126,6 +129,7 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
     setSourceModIdentifier(null);
     setModDescriptorFormat(null);
     setAutoDetectNote("");
+    setDuplicateProjectNotice("");
     if (projectType === "vanilla" && selectedGameId) {
       tryAutoDetectInstallPath(selectedGameId, GAME_ADAPTERS[selectedGameId].sourceLanguage);
     }
@@ -245,8 +249,28 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
 
   const provider = providerId ? TRANSLATION_PROVIDERS[providerId] : null;
 
-  async function handleCreateProject() {
+async function handleCreateProject() {
     if (!canCreate || !selectedGameId) return;
+
+    if (projectType === "vanilla") {
+      const existing = recentProjects.find(
+        (p) =>
+          p.project_type === "vanilla" &&
+          p.game_id === selectedGameId &&
+          p.target_language === effectiveTargetLanguage
+      );
+      if (existing) {
+        setDuplicateProjectNotice(
+          `A ${titleCase(effectiveTargetLanguage)} project for ${GAME_ADAPTERS[selectedGameId].displayName} ` +
+            `already exists. Opening it instead of creating a duplicate, since a second one would share the ` +
+            `same translation data behind the scenes.`
+        );
+        onProjectSelected(existing);
+        return;
+      }
+    }
+    setDuplicateProjectNotice("");
+
     const db = await getDb();
 
     const isMod = projectType === "mod";
@@ -563,6 +587,9 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
             Create Project →
           </button>
         </div>
+        {duplicateProjectNotice && (
+          <p style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>{duplicateProjectNotice}</p>
+        )}
       </div>
     </div>
   );
