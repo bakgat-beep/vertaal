@@ -43,10 +43,8 @@ body {
 }
 
 .logo-mark {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--accent);
+  height: 24px;
+  width: auto;
   flex-shrink: 0;
 }
 
@@ -177,6 +175,69 @@ table {
   flex-grow: 1;
 }
 
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.btn-accent-soft {
+  background: rgba(79, 140, 255, 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.btn-accent-soft:hover {
+  background: rgba(79, 140, 255, 0.2);
+}
+
+.more-menu {
+  position: relative;
+}
+
+.more-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  z-index: 50;
+  min-width: 230px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.more-menu-dropdown button {
+  width: 100%;
+  text-align: left;
+}
+
+.more-menu-section-label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.3rem 0.2rem 0.1rem;
+}
+
+.more-menu-section-label:not(:first-child) {
+  margin-top: 0.3rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
 .content-columns {
   display: flex;
   flex-grow: 1;
@@ -214,10 +275,36 @@ table {
   padding: 0.05rem 0.5rem;
 }
 
+.progress-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--status-confirmed);
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
+
 .editor-column {
   flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.editor-column-header {
+  flex-shrink: 0;
+  padding: 1rem 1rem 0 1rem;
+}
+
+.editor-row-list {
+  flex-grow: 1;
   overflow-y: auto;
-  padding: 1rem;
+  padding: 0 1rem 1rem 1rem;
 }
 
 .context-panel {
@@ -226,6 +313,7 @@ table {
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 1rem;
   font-size: 0.85rem;
   color: var(--text-dim);
@@ -236,6 +324,42 @@ table {
   padding: 0;
   overflow: hidden;
   border-left: none;
+}
+
+.context-field {
+  margin-bottom: 0.7rem;
+}
+
+.context-field-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  margin-bottom: 0.15rem;
+}
+
+.context-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0.8rem 0;
+}
+
+.context-alert {
+  display: block;
+  font-size: 0.75rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  margin-bottom: 0.6rem;
+}
+
+.context-alert-warning {
+  background: rgba(224, 160, 76, 0.15);
+  color: #e0a04c;
+}
+
+.context-alert-flag {
+  background: rgba(224, 90, 90, 0.15);
+  color: #e05a5a;
 }
 
 .collapse-toggle {
@@ -249,6 +373,7 @@ table {
 .row-key {
   font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
   font-size: 0.75rem;
+  word-break: break-all;
 }
 
 .row-actions {
@@ -269,6 +394,10 @@ table {
   padding: 0;
 }
 
+.action-btn:hover {
+  background: var(--bg-row-hover);
+}
+
 .action-btn.confirm:hover {
   border-color: var(--status-confirmed);
   color: var(--status-confirmed);
@@ -282,6 +411,40 @@ table {
 .action-btn.flagged {
   border-color: #e05a5a;
   color: #e05a5a;
+}
+
+.status-chip {
+  display: inline-block;
+  font-size: 0.65rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin: 0.15rem 0;
+}
+
+.status-chip-confirmed {
+  background: rgba(76, 175, 125, 0.15);
+  color: var(--status-confirmed);
+}
+
+.status-chip-aidraft {
+  background: rgba(217, 164, 65, 0.15);
+  color: var(--status-ai-draft);
+}
+
+.status-chip-untranslated {
+  background: rgba(90, 95, 104, 0.2);
+  color: var(--status-untranslated);
+}
+
+.protected-token {
+  background: rgba(217, 164, 65, 0.18);
+  color: var(--status-ai-draft);
+  border-radius: 3px;
+  padding: 0 2px;
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.85em;
 }
 
 .row-selected {

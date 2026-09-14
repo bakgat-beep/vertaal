@@ -11,6 +11,7 @@ import { getProviderCredentials, setProviderCredentials } from "./providers/cred
 import { backupDatabase, restoreDatabase } from "./backup";
 import { readModDescriptor, slugifyModName } from "./modDescriptor";
 import { detectSteamGameFolder } from "./steamDetect";
+import logoFull from "./assets/logo-full-white.png";
 
 const STEAM_FOLDER_NAMES: Record<string, string> = {
   eu5: "Europa Universalis V",
@@ -318,7 +319,7 @@ async function handleCreateProject() {
     <div className="welcome-overlay">
       <div className="welcome-window">
         <div className="welcome-title">
-          <h1 style={{ marginBottom: "0.2rem" }}>Vertaal</h1>
+          <img src={logoFull} alt="Vertaal" style={{ width: "200px", height: "auto", marginBottom: "0.4rem" }} />
           <p style={{ color: "var(--text-dim)", margin: 0 }}>Translate Paradox grand strategy games</p>
         </div>
 
