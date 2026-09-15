@@ -13,6 +13,7 @@ interface Props {
 
 export default function ProjectSettings({ project, onProjectUpdated, onClose }: Props) {
   const [modName, setModName] = useState(project.mod_name);
+  const [showInRecent, setShowInRecent] = useState(project.hidden_from_recent !== 1);
   const [providerId, setProviderId] = useState(project.translation_provider_id ?? "ollama");
   const [model, setModel] = useState(project.ai_model ?? "");
   const [apiKeyInput, setApiKeyInput] = useState("");
@@ -53,13 +54,16 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
     const trimmedTargetOverride = targetLangOverride.trim() || null;
 
     try {
+      const hiddenFromRecent = showInRecent ? 0 : 1;
+
       const db = await getDb();
       await db.execute(
         `UPDATE projects
          SET mod_name = $1, translation_provider_id = $2, ai_model = $3, retry_delay_ms = $4,
-             google_translate_delay_ms = $5, source_language_code_override = $6, target_language_code_override = $7
-         WHERE id = $8`,
-        [modName, providerId, model || null, parsedRetryDelay, parsedGoogleDelay, trimmedSourceOverride, trimmedTargetOverride, project.id]
+             google_translate_delay_ms = $5, source_language_code_override = $6, target_language_code_override = $7,
+             hidden_from_recent = $8
+         WHERE id = $9`,
+        [modName, providerId, model || null, parsedRetryDelay, parsedGoogleDelay, trimmedSourceOverride, trimmedTargetOverride, hiddenFromRecent, project.id]
       );
 
       if (apiKeyInput.trim() || baseUrl.trim()) {
@@ -79,6 +83,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
         google_translate_delay_ms: parsedGoogleDelay,
         source_language_code_override: trimmedSourceOverride,
         target_language_code_override: trimmedTargetOverride,
+        hidden_from_recent: hiddenFromRecent,
       });
       setOutput("✓ Settings saved.");
     } catch (err) {
@@ -101,6 +106,20 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           <div className="form-label">Mod name</div>
           <input value={modName} onChange={(e) => setModName(e.target.value)} style={{ flexGrow: 1 }} />
         </div>
+
+        <div className="form-row">
+          <div className="form-label">Recent Projects</div>
+          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontWeight: "normal" }}>
+            <input type="checkbox" checked={showInRecent} onChange={(e) => setShowInRecent(e.target.checked)} />
+            Show this project in the Recent Projects list
+          </label>
+        </div>
+        {!showInRecent && (
+          <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
+            Unchecking this doesn't delete anything — the project and its translations stay exactly as they are,
+            it just won't clutter the list. Come back here to bring it back.
+          </p>
+        )}
 
         <div className="form-row">
           <div className="form-label">Translation provider</div>

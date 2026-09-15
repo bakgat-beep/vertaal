@@ -14,6 +14,7 @@ export interface EditorRow {
 }
 export interface Project {
   id: number;
+  created_at: string;
   game_id: string;
   source_language: string;
   target_language: string;
@@ -32,6 +33,7 @@ export interface Project {
   source_mod_identifier: string | null;
   git_repo_path: string | null;
   git_remote_url: string | null;
+  hidden_from_recent: number;
 }
 export interface TranslationRequest {
   text: string;

@@ -77,9 +77,28 @@ The installer will be in `src-tauri/target/release/bundle/`.
 4. **Confirm** — AI and manual drafts stay unconfirmed until a human reviews and confirms them.
 5. **Export** — "Build Mod" packages everything into a proper Paradox mod folder, ready to enable in the launcher. For mod translations, this is a separate companion mod — enable both the original mod and the translation together.
 
+## Reporting bugs, requesting features, or reporting a security issue
+
+Vertaal tracks all of this through **GitHub Issues** — a free, built-in bug/request tracker on the project's GitHub page. You don't need any coding knowledge to use it, just a (free) GitHub account.
+
+**To report a bug or request a feature:**
+
+1. If you don't already have one, create a free account at [github.com/signup](https://github.com/signup).
+2. Go to the [Issues page](https://github.com/bakgat-beep/vertaal/issues) for this project.
+3. Click the green **"New issue"** button.
+4. Give it a short, clear title (e.g. "Export fails when target language is Polish") and describe:
+   - What you did
+   - What you expected to happen
+   - What actually happened instead — the exact error message if there was one, or a screenshot
+5. Click **"Submit new issue"**. That's it — the maintainer (and anyone else watching the project) will see it.
+
+You can also browse [existing issues](https://github.com/bakgat-beep/vertaal/issues) first, in case someone's already reported the same thing — if so, adding a "+1" comment or a 👍 reaction there is more useful than opening a duplicate.
+
+**To report a security issue** (e.g. you've found a way Vertaal could be tricked into reading/writing files it shouldn't, or a credential-handling problem): please **don't** use a public issue for this one. See [SECURITY.md](SECURITY.md) for how to report it privately instead.
+
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the project's architecture (the `GameAdapter` pattern for adding new games, the `TranslationProvider` pattern for adding new AI services), and how to submit changes.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the project's architecture (the `GameAdapter` pattern for adding new games, the `TranslationProvider` pattern for adding new AI services), and how to submit changes. Vertaal has been built entirely through AI-assisted "vibecoding" by someone with no prior coding background — if that's you too, CONTRIBUTING.md explains how to keep working this way.
 
 ## License
 
