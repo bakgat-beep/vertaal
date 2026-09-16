@@ -3,6 +3,7 @@ import type { EditorRow, Project } from "../types";
 import type { ViewMode } from "../App";
 import { getDb } from "../db";
 import { translateWithRetry } from "../translate";
+import { loadGlossaryTerms } from "../glossary";
 import { protectTokens } from "../parser";
 import { backupDatabase } from "../backup";
 
@@ -55,6 +56,12 @@ export function useBatchTranslation({
     stopRequestedRef.current = false;
     setBatchProgress({ done: 0, total: targets.length });
 
+    // Loaded once for the whole run rather than per-string — matching this
+    // batch's glossary snapshot to the strings it translates. If you edit
+    // the glossary while a run is in progress, the change won't be picked
+    // up until the next run.
+    const glossaryTerms = await loadGlossaryTerms(currentProject.game_id, currentProject.target_language);
+
     let succeeded = 0;
     let lastError = "";
 
@@ -62,7 +69,14 @@ export function useBatchTranslation({
       if (stopRequestedRef.current) break;
       const row = targets[i];
       setStatus(`Translating page: ${i + 1}/${targets.length} — ${row.key}`);
-      const result = await translateWithRetry(currentProject, row.key, row.game_id, row.source_text, () => stopRequestedRef.current);
+      const result = await translateWithRetry(
+        currentProject,
+        row.key,
+        row.game_id,
+        row.source_text,
+        () => stopRequestedRef.current,
+        glossaryTerms
+      );
       if (result.ok) succeeded++;
       else lastError = result.error ?? "unknown error";
       setBatchProgress({ done: i + 1, total: targets.length });
@@ -143,6 +157,11 @@ export function useBatchTranslation({
     let done = 0;
     let distinctFailureStreak = 0;
 
+    // Same one-time-load approach as batchTranslatePage — see the comment
+    // there. For an overnight run this matters even more, since it can
+    // otherwise mean thousands of repeated identical glossary queries.
+    const glossaryTerms = await loadGlossaryTerms(currentProject.game_id, currentProject.target_language);
+
     while (done < targetCount && !stopRequestedRef.current) {
       const next = (await db.select(
         `SELECT s.key as key, s.game_id as game_id, s.source_text as source_text
@@ -161,7 +180,14 @@ export function useBatchTranslation({
 
       const row = next[0];
       setStatus(`Overnight batch: ${done + 1}/${targetCount} — ${row.key}`);
-      const result = await translateWithRetry(currentProject, row.key, row.game_id, row.source_text, () => stopRequestedRef.current);
+      const result = await translateWithRetry(
+        currentProject,
+        row.key,
+        row.game_id,
+        row.source_text,
+        () => stopRequestedRef.current,
+        glossaryTerms
+      );
 
       if (result.ok) {
         distinctFailureStreak = 0;
@@ -199,10 +225,20 @@ export function useBatchTranslation({
     let done = 0;
     let consecutiveFailures = 0;
 
+    // Same one-time-load approach as the other two batch functions above.
+    const glossaryTerms = await loadGlossaryTerms(currentProject.game_id, currentProject.target_language);
+
     for (const row of targets) {
       if (stopRequestedRef.current) break;
       setStatus(`Re-running AI: ${done + 1}/${targets.length} — ${row.key}`);
-      const result = await translateWithRetry(currentProject, row.key, row.game_id, row.source_text, () => stopRequestedRef.current);
+      const result = await translateWithRetry(
+        currentProject,
+        row.key,
+        row.game_id,
+        row.source_text,
+        () => stopRequestedRef.current,
+        glossaryTerms
+      );
       if (result.ok) {
         consecutiveFailures = 0;
         done++;

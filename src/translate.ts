@@ -1,7 +1,7 @@
 import { getDb } from "./db";
 import type { Project } from "./types";
 import { protectTokens, restoreTokens, validateTokensPreserved } from "./parser";
-import { loadGlossaryTerms, matchGlossaryTerms, buildGlossaryInstructions } from "./glossary";
+import { loadGlossaryTerms, matchGlossaryTerms, buildGlossaryInstructions, type GlossaryTerm } from "./glossary";
 import { TRANSLATION_PROVIDERS } from "./providers";
 import { getProviderCredentials } from "./providers/credentials.ts";
 import { GAME_ADAPTERS } from "./games";
@@ -19,7 +19,12 @@ export async function translateAndSave(
   currentProject: Project | null,
   key: string,
   gameId: string,
-  sourceText: string
+  sourceText: string,
+  // When a caller is translating many strings in one run (see
+  // useBatchTranslation.ts), it loads the glossary once up front and passes
+  // it here — otherwise translateAndSave fetches it fresh itself, which is
+  // what the single-row "Translate" button in the editor still does.
+  preloadedGlossaryTerms?: GlossaryTerm[]
 ): Promise<{ ok: boolean; error?: string }> {
   if (!currentProject) return { ok: false, error: "No project loaded." };
   const provider = TRANSLATION_PROVIDERS[currentProject.translation_provider_id ?? "ollama"];
@@ -31,7 +36,7 @@ export async function translateAndSave(
   }
   try {
     const { text: protectedText, tokens } = protectTokens(sourceText);
-    const terms = await loadGlossaryTerms(gameId, currentProject.target_language);
+    const terms = preloadedGlossaryTerms ?? (await loadGlossaryTerms(gameId, currentProject.target_language));
     const matchedTerms = matchGlossaryTerms(sourceText, terms);
     const glossaryInstruction =
       matchedTerms.length > 0 ? buildGlossaryInstructions(sourceText, matchedTerms).join("\n") : undefined;
@@ -120,6 +125,7 @@ export async function translateWithRetry(
   gameId: string,
   sourceText: string,
   shouldStop: () => boolean,
+  preloadedGlossaryTerms?: GlossaryTerm[],
   maxAttempts: number = 3,
   retryDelayMs?: number
 ): Promise<{ ok: boolean; error?: string; attempts: number }> {
@@ -130,7 +136,7 @@ export async function translateWithRetry(
     if (shouldStop()) {
       return { ok: false, error: "Stopped by user.", attempts: attempt - 1 };
     }
-    lastResult = await translateAndSave(currentProject, key, gameId, sourceText);
+    lastResult = await translateAndSave(currentProject, key, gameId, sourceText, preloadedGlossaryTerms);
     if (lastResult.ok) {
       return { ok: true, attempts: attempt };
     }

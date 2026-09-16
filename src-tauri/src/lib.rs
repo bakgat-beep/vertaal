@@ -109,6 +109,12 @@ pub fn run() {
             sql: include_str!("../migrations/0017_hide_from_recent.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
+        tauri_plugin_sql::Migration {
+            version: 18,
+            description: "glossary_status",
+            sql: include_str!("../migrations/0018_glossary_status.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
