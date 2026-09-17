@@ -80,6 +80,7 @@ function App() {
     loadPage,
     toggleTranslatedView,
     runSearch,
+    searchFor,
     updateDraft,
     selectCategory,
     selectSubcategory,
@@ -941,6 +942,10 @@ function App() {
           gameId={currentProject.game_id}
           targetLanguage={currentProject.target_language}
           onClose={() => closePanel("glossary")}
+          onViewOccurrences={(term) => {
+            closePanel("glossary");
+            searchFor(term);
+          }}
         />
       )}
       {panels.collaboration && currentProject && (

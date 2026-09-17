@@ -54,7 +54,14 @@ export function useEditorRows({
     newOffset: number,
     category?: string,
     subcategory?: string,
-    statusFilterOverride?: Set<string>
+    statusFilterOverride?: Set<string>,
+    // Lets a caller (e.g. "view occurrences" from the Glossary Manager)
+    // search for a specific term immediately, without the stale-closure
+    // problem of calling setSearchTerm() then loadPage() back to back —
+    // React batches the state update, so loadPage would otherwise still
+    // see the OLD searchTerm on this same call. Falls back to the current
+    // searchTerm state for the normal search-box/button flow.
+    searchTermOverride?: string
   ) {
     if (!currentProject) return;
     setStatus("Loading...");
@@ -96,7 +103,8 @@ export function useEditorRows({
         " AND t.status = 'ai-suggested' ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4";
       batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
     } else if (mode === "search") {
-      const likeTerm = `%${searchTerm}%`;
+      const effectiveSearchTerm = searchTermOverride ?? searchTerm;
+      const likeTerm = `%${effectiveSearchTerm}%`;
       const sql =
         baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
         " AND (s.key LIKE $3 OR s.source_text LIKE $4 OR t.translated_text LIKE $5) LIMIT $6 OFFSET $7";
@@ -152,6 +160,14 @@ export function useEditorRows({
   function runSearch() {
     if (!searchTerm.trim()) return;
     loadPage("search", 0);
+  }
+
+  // Searches for an exact term immediately — used by "view occurrences"
+  // from the Glossary Manager, where the term comes from outside the
+  // search box rather than from the user typing into it.
+  function searchFor(term: string) {
+    setSearchTerm(term);
+    loadPage("search", 0, undefined, undefined, undefined, term);
   }
 
   function updateDraft(key: string, value: string) {
@@ -251,6 +267,7 @@ export function useEditorRows({
     loadPage,
     toggleTranslatedView,
     runSearch,
+    searchFor,
     updateDraft,
     selectCategory,
     selectSubcategory,

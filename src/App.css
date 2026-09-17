@@ -661,6 +661,150 @@ textarea::placeholder {
   margin-top: 0.5rem;
 }
 
+.glossary-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.glossary-toolbar input[type="text"] {
+  flex-grow: 1;
+}
+
+.glossary-result-count {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.glossary-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.glossary-table th {
+  text-align: left;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-weight: 600;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.glossary-table td {
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.glossary-table input[type="text"] {
+  width: 100%;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-badge.preferred {
+  color: var(--status-confirmed);
+  background: rgba(76, 175, 125, 0.15);
+}
+
+.status-badge.review {
+  color: var(--status-ai-draft);
+  background: rgba(217, 164, 65, 0.15);
+}
+
+.status-badge.untranslated {
+  color: var(--status-untranslated);
+  background: rgba(90, 95, 104, 0.15);
+}
+
+.glossary-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.glossary-workspace {
+  display: flex;
+  gap: 1.25rem;
+  align-items: flex-start;
+}
+
+.glossary-list {
+  flex: 1;
+  min-width: 0;
+}
+
+.glossary-table tbody tr {
+  cursor: pointer;
+}
+
+.glossary-table tbody tr:hover {
+  background: var(--bg-row-hover);
+}
+
+.glossary-table tbody tr.selected {
+  background: var(--bg-selected);
+}
+
+.glossary-details {
+  width: 300px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  padding-left: 1.25rem;
+}
+
+.glossary-details-empty {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  text-align: center;
+  padding-top: 2rem;
+}
+
+.glossary-details .form-row {
+  display: block;
+}
+
+.glossary-details .form-label {
+  width: auto;
+  margin-bottom: 0.2rem;
+}
+
+.glossary-details input[type="text"],
+.glossary-details textarea,
+.glossary-details select {
+  width: 100%;
+}
+
+.glossary-save-message {
+  font-size: 0.8rem;
+  color: var(--status-confirmed);
+  margin: 0.5rem 0 0;
+}
+
+.glossary-bulk-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  background: var(--bg-selected);
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
 .form-row {
   display: flex;
   align-items: center;
