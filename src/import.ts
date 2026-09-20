@@ -111,8 +111,19 @@ export async function importProjectFolder(
       for (const item of parsed) {
         const hash = String(item.text.length) + "-" + item.text.slice(0, 20);
         await db.execute(
-          `INSERT OR REPLACE INTO strings (key, game_id, source_text, source_text_hash, file_path, context_label, category, subcategory)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          // An "upsert" (update the row if it exists) rather than INSERT OR REPLACE
+          // (delete it and add a new one): the database notices a changed
+          // source text on an UPDATE and records the old wording against the
+          // translations made with it. See migration 0020.
+          `INSERT INTO strings (key, game_id, source_text, source_text_hash, file_path, context_label, category, subcategory)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT(key, game_id) DO UPDATE SET
+             source_text = excluded.source_text,
+             source_text_hash = excluded.source_text_hash,
+             file_path = excluded.file_path,
+             context_label = excluded.context_label,
+             category = excluded.category,
+             subcategory = excluded.subcategory`,
           [item.key, currentProject.game_id, item.text, hash, filePath, contextLabel, category, subcategory]
         );
         totalStrings++;

@@ -1,6 +1,6 @@
 import WelcomeScreen from "./WelcomeScreen";
 import { importProjectFolder } from "./import";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import logoGlobe from "./assets/logo-globe-white.png";
 import { usePanels } from "./hooks/usePanels";
 import { useBatchTranslation } from "./hooks/useBatchTranslation";
@@ -18,18 +18,21 @@ import { backupDatabase } from "./backup";
 import { exportPortableProjectData } from "./portableExport";
 import { importPortableProjectData } from "./mergeImport";
 import GlossaryManager from "./GlossaryManager";
+import SourceDiff from "./SourceDiff";
+import { isSourceChanged } from "./sourceChange";
 import { loadHistory, type HistoryEntry } from "./history";
 import { save } from "@tauri-apps/plugin-dialog";
 import { documentDir } from "@tauri-apps/api/path";
 import CollaborationPanel from "./CollaborationPanel";
-import { TRANSLATION_PROVIDERS } from "./providers";
+import { getProjectProvider } from "./providers";
+import AppSettings from "./AppSettings";
 import ProjectSettings from "./ProjectSettings";
-import { exportMod } from "./export";
+import { exportMod, getExportPreflight } from "./export";
 import { translateAndSave } from "./translate";
 import { openPath } from "@tauri-apps/plugin-opener";
 import ExportSummary, { type ExportPreflight, type ExportOutcome } from "./ExportSummary";
 
-export type ViewMode = "all" | "untranslated" | "translated" | "aidraft" | "outdated" | "issues" | "flagged" | "search" | "category" | "subcategory";
+export type ViewMode = "all" | "untranslated" | "translated" | "draft" | "outdated" | "issues" | "flagged" | "search" | "category" | "subcategory";
 
 export interface SubcategoryCount {
   subcategory: string;
@@ -78,7 +81,6 @@ function App() {
     categoryStatusFilter,
     setCategoryStatusFilter,
     loadPage,
-    toggleTranslatedView,
     runSearch,
     searchFor,
     updateDraft,
@@ -87,6 +89,7 @@ function App() {
     saveDraft,
     confirmRow,
     toggleFlag,
+    flushWrites,
   } = useEditorRows({
     currentProject,
     contributorName,
@@ -103,7 +106,8 @@ function App() {
     overnightCount,
     setOvernightCount,
     batchTranslatePage,
-    batchAutoAcceptProtectedOnly,
+    batchConfirmCodeOnly,
+    batchConfirmBlank,
     batchTranslateOvernight,
     batchRerunAIUnconfirmed,
     stopBatch,
@@ -123,7 +127,18 @@ function App() {
 
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const { panels, openPanel, closePanel } = usePanels();
+
+  // Jump back to the top of the list whenever a different page/view is shown
+  // (it used to stay scrolled down where the previous page ended).
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: 0 });
+  }, [viewMode, offset, categoryFilter, subcategoryFilter, viewMode === "search" ? searchTerm : ""]);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [showAppSettings, setShowAppSettings] = useState(false);
+  // False until the project's string counts have been read, so the "nothing
+  // imported yet" message can't flash up while they are still loading.
+  const [countsReady, setCountsReady] = useState(false);
 
   const [exportPreflight, setExportPreflight] = useState<ExportPreflight | null>(null);
 
@@ -138,7 +153,8 @@ function App() {
 
   useEffect(() => {
     if (!currentProject) return;
-    refreshCounts();
+    setCountsReady(false);
+    refreshCounts().then(() => setCountsReady(true));
   }, [currentProject]);
 
   useEffect(() => {
@@ -174,11 +190,10 @@ function App() {
     setStatus(`Import complete. Processed ${outcome.filesProcessed} files, ${outcome.stringsProcessed} strings this run.`);
   }
   
+  // True when the game's source text is not exactly what this translation was
+  // made against (any difference at all counts) — see sourceChange.ts.
   function isOutdated(row: EditorRow): boolean {
-    return (
-      row.source_hash_at_translation !== null &&
-      row.source_hash_at_translation !== row.source_text_hash
-    );
+    return isSourceChanged(row);
   }
   
   function percentComplete(total: number, untranslated: number): number {
@@ -226,9 +241,18 @@ function App() {
     const lang = currentProject.target_language;
 
     await db.execute(
-      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
-       VALUES ($1, $2, $3, $4, 'human-draft', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
-      [selectedRow.key, selectedRow.game_id, lang, text, contributorName, selectedRow.key, selectedRow.game_id, lang, selectedRow.source_text_hash]
+      // Upsert: restores the old text as a draft, while the row's flag and its
+      // "translated against this source text" record are left as they were
+      // (an old wording can't tell us which source it was written for).
+      `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_text_at_translation)
+       VALUES ($1, $2, $3, $4, 'human-draft', $5, datetime('now'), $6)
+       ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET
+         translated_text = excluded.translated_text,
+         status = 'human-draft',
+         translated_by = excluded.translated_by,
+         updated_at = excluded.updated_at,
+         source_text_at_translation = COALESCE(translations.source_text_at_translation, excluded.source_text_at_translation)`,
+      [selectedRow.key, selectedRow.game_id, lang, text, contributorName, selectedRow.source_text]
     );
 
     await db.execute(
@@ -260,7 +284,7 @@ function App() {
   async function handleExportData() {
     if (!currentProject) return;
     const docs = await documentDir();
-    const defaultPath = await join(docs, `${currentProject.game_id}-${currentProject.target_language}-export.json`);
+    const defaultPath = await join(docs, `${currentProject.game_id}-${currentProject.target_language}-export.json`.replace(/[<>:"/\\|?*]/g, "_"));
     const chosenPath = await save({ defaultPath });
     if (!chosenPath) return;
     setStatus("Exporting project data...");
@@ -303,19 +327,8 @@ function App() {
 
   async function openExportModal() {
     if (!currentProject) return;
-    const db = await getDb();
-    const result = (await db.select(
-      `SELECT
-         (SELECT COUNT(*) FROM strings WHERE game_id = $1) as total,
-         (SELECT COUNT(*) FROM translations WHERE status = 'human-confirmed' AND translated_text IS NOT NULL
-           AND translated_text != '' AND game_id = $1 AND target_language = $2) as confirmed,
-         (SELECT COUNT(*) FROM translations t JOIN strings s ON t.string_key = s.key AND t.game_id = s.game_id
-           WHERE t.status = 'human-confirmed' AND t.game_id = $1 AND t.target_language = $2
-           AND t.source_hash_at_translation IS NOT NULL AND t.source_hash_at_translation != s.source_text_hash) as outdated,
-         (SELECT COUNT(*) FROM translations WHERE flagged = 1 AND game_id = $1 AND target_language = $2) as flagged`,
-      [currentProject.game_id, currentProject.target_language]
-    )) as ExportPreflight[];
-    setExportPreflight(result[0]);
+    await flushWrites();
+    setExportPreflight(await getExportPreflight(currentProject));
     openPanel("exportSummary");
   }
 
@@ -327,6 +340,18 @@ function App() {
   // --- AI translation ---
 
   async function aiTranslateRow(row: EditorRow) {
+    await flushWrites();
+    // Ask first if the box holds something a person wrote or confirmed —
+    // but not when it only holds an untouched AI draft (that's fine to redo).
+    const boxText = (drafts[row.key] ?? row.translated_text ?? "").trim();
+    const isUntouchedAiDraft = row.status === "ai-suggested" && boxText === (row.translated_text ?? "").trim();
+    if (boxText !== "" && !isUntouchedAiDraft) {
+      const proceed = window.confirm(
+        "This string already has your own translation. Replace it with a new AI draft?\n\n" +
+          "The current text is kept in this string's History, so you can restore it."
+      );
+      if (!proceed) return;
+    }
     setStatus(`Requesting AI translation for ${row.key}...`);
     const result = await translateAndSave(currentProject, row.key, row.game_id, row.source_text);
     if (!result.ok) {
@@ -337,16 +362,15 @@ function App() {
     setStatus(`AI translated ${row.key}.`);
   }
 
-  async function confirmAndNext(row: EditorRow, index: number) {
-    await confirmRow(row);
-    const next = rows[index + 1];
-    if (next) setSelectedRow(next);
-  }
-
   async function confirmAllOnPage() {
     if (!currentProject) return;
+    await flushWrites();
+    // What counts as "the translation" for each row is whatever is in its box
+    // right now (its latest draft), falling back to the saved text.
+    const textFor = (r: EditorRow) => drafts[r.key] ?? r.translated_text ?? "";
     const targets = rows.filter(
-      (r) => (r.status !== "human-confirmed" || (r.translated_text ?? "").trim() === "") && !r.flagged
+      (r) =>
+        (r.status !== "human-confirmed" || (textFor(r).trim() === "" && r.source_text.trim() !== "")) && !r.flagged
     );
     if (targets.length === 0) {
       setStatus("Nothing to confirm on this page.");
@@ -362,11 +386,20 @@ function App() {
     const lang = currentProject.target_language;
 
     for (const row of targets) {
-      const finalText = (row.translated_text ?? "").trim() !== "" ? row.translated_text : row.source_text;
+      const typed = textFor(row);
+      const finalText = typed.trim() !== "" ? typed : row.source_text;
+      // Upsert: only the text/status/author/time/fingerprint change, so a
+      // row's flag is never disturbed.
       await db.execute(
-        `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_hash_at_translation, flagged)
-         VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), $6, COALESCE((SELECT flagged FROM translations WHERE string_key = $7 AND game_id = $8 AND target_language = $9), 0))`,
-        [row.key, row.game_id, lang, finalText, contributorName, row.source_text_hash, row.key, row.game_id, lang]
+        `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_text_at_translation)
+         VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), $6)
+         ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET
+           translated_text = excluded.translated_text,
+           status = 'human-confirmed',
+           translated_by = excluded.translated_by,
+           updated_at = excluded.updated_at,
+           source_text_at_translation = excluded.source_text_at_translation`,
+        [row.key, row.game_id, lang, finalText, contributorName, row.source_text]
       );
     }
 
@@ -423,11 +456,59 @@ function App() {
   }
 
   if (showWelcome || !currentProject) {
-    return <WelcomeScreen onProjectSelected={handleProjectSelected} />;
+    return (
+      <>
+        <WelcomeScreen onProjectSelected={handleProjectSelected} onOpenAppSettings={() => setShowAppSettings(true)} />
+        {showAppSettings && (
+          <AppSettings
+            contributorName={contributorName}
+            onSaved={setContributorNameState}
+            onClose={() => setShowAppSettings(false)}
+          />
+        )}
+      </>
+    );
   }
 
-  const currentProviderRequiresModel =
-    TRANSLATION_PROVIDERS[currentProject.translation_provider_id ?? "ollama"]?.requiresModel ?? true;
+  // The project's AI provider, or null when it is set to manual translation
+  // only — in which case every AI button and batch action is hidden.
+  const provider = getProjectProvider(currentProject);
+  const aiEnabled = provider !== null;
+  const currentProviderRequiresModel = provider?.requiresModel ?? false;
+
+  // Highlights the sidebar entry for the list you're currently looking at.
+  function sidebarClass(active: boolean) {
+    return active ? "sidebar-item sidebar-item-active" : "sidebar-item";
+  }
+
+  // The Previous/Next buttons, shown above and below the list. "Next" is
+  // greyed out when this page isn't full (there's nothing after it), and the
+  // buttons stay on screen even when a page comes up empty so you're never
+  // stranded.
+  const pager =
+    rows.length > 0 || offset > 0 ? (
+      <div className="pager">
+        <button
+          onClick={() =>
+            loadPage(viewMode, Math.max(0, offset - BATCH_SIZE), categoryFilter ?? undefined, subcategoryFilter ?? undefined)
+          }
+          disabled={offset === 0}
+        >
+          ← Previous {BATCH_SIZE}
+        </button>
+        <span className="pager-range">
+          {rows.length > 0 ? `Strings ${offset + 1}–${offset + rows.length}` : "No more strings here"}
+        </span>
+        <button
+          onClick={() =>
+            loadPage(viewMode, offset + BATCH_SIZE, categoryFilter ?? undefined, subcategoryFilter ?? undefined)
+          }
+          disabled={rows.length < BATCH_SIZE}
+        >
+          Next {BATCH_SIZE} →
+        </button>
+      </div>
+    ) : null;
 
   return (
     <div className="app-shell">
@@ -440,7 +521,9 @@ function App() {
           {currentProject.target_language}
         </span>
         <div className="title-bar-spacer" />
-        <button onClick={() => setShowWelcome(true)}>Projects</button>
+        <button onClick={() => setShowWelcome(true)} title="Back to the list of your projects (your work is saved automatically)">
+          ← Projects
+        </button>
         <button
           onClick={openOutputFolder}
           disabled={!currentProject.output_path}
@@ -452,8 +535,17 @@ function App() {
         >
           Open Output Folder
         </button>
-        <button onClick={() => openPanel("projectSettings")}>Project Settings</button>
-        <button className="build-mod-button" onClick={openExportModal}>
+        <button
+          onClick={() => openPanel("projectSettings")}
+          title="This project's translation provider, exported mod name and other settings"
+        >
+          Project Settings
+        </button>
+        <button
+          className="build-mod-button"
+          onClick={openExportModal}
+          title="Package your confirmed translations into a mod folder you can enable in the game's launcher. Shows a summary first."
+        >
           Build Mod
         </button>
       </div>
@@ -507,73 +599,106 @@ function App() {
         <div className="toolbar-spacer" />
 
         <div className="more-menu">
-          <button onClick={() => setMoreMenuOpen((v) => !v)} title="Less-frequent actions: batch/AI, backup, import/export, collaboration">
+          <button onClick={() => setMoreMenuOpen((v) => !v)} title="Less-frequent actions: AI batches, importing game files, sharing, backups, app settings">
             More actions ▾
           </button>
           {moreMenuOpen && (
             <div className="more-menu-dropdown">
-              <div className="more-menu-section-label">Batch / AI</div>
+              {aiEnabled && (
+                <>
+                  <div className="more-menu-section-label">AI translation</div>
+                  <button
+                    onClick={() => { batchTranslatePage(); setMoreMenuOpen(false); }}
+                    disabled={batchRunning}
+                    title="AI-translate every string on this page that is untranslated or still an AI draft. Strings you've typed or confirmed are never touched."
+                  >
+                    Translate this page
+                  </button>
+                  <div className="more-menu-caption">Whole project — how many untranslated strings to translate:</div>
+                  <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                    <input
+                      type="number"
+                      value={overnightCount}
+                      onChange={(e) => setOvernightCount(e.target.value)}
+                      style={{ width: "70px" }}
+                      disabled={batchRunning}
+                      title="How many strings to translate in this run"
+                    />
+                    <button
+                      onClick={() => { batchTranslateOvernight(); setMoreMenuOpen(false); }}
+                      disabled={batchRunning}
+                      title="AI-translate that many untranslated strings, working from the start of the project (not just this page). Handy to leave running overnight; Stop appears in the toolbar."
+                      style={{ flex: 1 }}
+                    >
+                      Start
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => { batchRerunAIUnconfirmed(); setMoreMenuOpen(false); }}
+                    disabled={batchRunning}
+                    title="Re-runs the AI on every string in the whole project that is currently an AI draft, replacing those drafts — useful after switching provider or model. Text you typed or confirmed is never touched."
+                  >
+                    Redo all AI drafts
+                  </button>
+                </>
+              )}
+
+              <div className="more-menu-section-label">Strings that need no translation</div>
               <button
-                onClick={() => { batchTranslatePage(); setMoreMenuOpen(false); }}
+                onClick={() => { batchConfirmCodeOnly(); setMoreMenuOpen(false); }}
                 disabled={batchRunning}
-                title="AI-translate every untranslated or AI-suggested string on this page, using the current provider"
+                title="Finds strings made up only of game code (icons, variables, functions — no words) anywhere in the project and CONFIRMS them exactly as they are, so nobody has to review them. In most languages that is the right result. AI translation skips these strings."
               >
-                AI: Page
+                Confirm code-only strings
               </button>
               <button
-                onClick={() => { batchAutoAcceptProtectedOnly(); setMoreMenuOpen(false); }}
+                onClick={() => { batchConfirmBlank(); setMoreMenuOpen(false); }}
                 disabled={batchRunning}
-                title="Find untranslated strings made entirely of tokens/icons/variables (no real text) across the whole project, and mark them AI draft using the source text as-is"
+                title="Finds strings that are empty or contain only spaces or line breaks, anywhere in the project, and CONFIRMS them as they are. There is nothing to translate in them."
               >
-                Auto-Accept Code
-              </button>
-              <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
-                <input
-                  type="number"
-                  value={overnightCount}
-                  onChange={(e) => setOvernightCount(e.target.value)}
-                  style={{ width: "70px" }}
-                  disabled={batchRunning}
-                  title="How many strings to translate in the overnight batch below"
-                />
-                <button
-                  onClick={() => { batchTranslateOvernight(); setMoreMenuOpen(false); }}
-                  disabled={batchRunning}
-                  title="AI-translate untranslated strings across the whole project, up to the count above"
-                  style={{ flex: 1 }}
-                >
-                  Run Batch
-                </button>
-              </div>
-              <button
-                onClick={() => { batchRerunAIUnconfirmed(); setMoreMenuOpen(false); }}
-                disabled={batchRunning}
-                title="Re-run AI translation on every AI-suggested (unconfirmed) string across the whole project, using the current provider — useful after switching providers"
-              >
-                Retry AI: All
+                Confirm empty &amp; blank strings
               </button>
 
-              <div className="more-menu-section-label">Data &amp; collaboration</div>
-              <button onClick={() => { handleBackupNow(); setMoreMenuOpen(false); }} title="Backs up the ENTIRE app database — every project, every game, not just this one">
-                Backup App
+              <div className="more-menu-section-label">Game files</div>
+              <button
+                onClick={() => { importFolder(); setMoreMenuOpen(false); }}
+                title="Read the game's (or mod's) localisation files into this project. Do this once to begin, and again after a game patch: your translations are kept, and strings whose original text changed appear under Patch Changed."
+              >
+                Import / update from game files…
               </button>
+
+              <div className="more-menu-section-label">Share &amp; back up</div>
               <button
                 onClick={() => { handleExportData(); setMoreMenuOpen(false); }}
-                title="Export this project's translations + glossary as a shareable JSON file — for sending progress to a collaborator without Git, or moving to another computer. (Backup Now saves the whole app database instead; Collaboration does this automatically via GitHub.)"
+                title="Save this project's translations and glossary to a .json file you can send to a collaborator, or move to another computer."
               >
-                Export JSON
+                Save translations to a file…
               </button>
               <button
                 onClick={() => { handleImportData(); setMoreMenuOpen(false); }}
-                title="Import a JSON file exported from another Vertaal install (via Export JSON) and merge its translations into this project"
+                title="Merge translations from a .json file made with 'Save translations to a file' (same game and language). Only strings you already have are affected; your more recent edits are kept."
               >
-                Import JSON
+                Merge translations from a file…
               </button>
-              <button onClick={() => { importFolder(); setMoreMenuOpen(false); }} title="Import a localisation folder from the game install">
-                Import
+              <button
+                onClick={() => { openPanel("collaboration"); setMoreMenuOpen(false); }}
+                title="Share progress with teammates through GitHub: upload your work and download theirs, with everything merged automatically."
+              >
+                GitHub collaboration…
               </button>
-              <button onClick={() => { openPanel("collaboration"); setMoreMenuOpen(false); }} title="Git/GitHub collaboration: sync, pull, and merge with teammates">
-                Collab
+              <button
+                onClick={() => { handleBackupNow(); setMoreMenuOpen(false); }}
+                title="Saves a copy of the ENTIRE app database — every project and game, not just this one."
+              >
+                Back up all app data…
+              </button>
+
+              <div className="more-menu-section-label">App</div>
+              <button
+                onClick={() => { setShowAppSettings(true); setMoreMenuOpen(false); }}
+                title="Your name and other settings that apply to the whole app"
+              >
+                App settings…
               </button>
             </div>
           )}
@@ -582,37 +707,65 @@ function App() {
 
       <div className="content-columns">
         <div className="sidebar">
-          <div className="sidebar-item" onClick={() => loadPage("all", 0)}>
-            <span>All Files</span>
+          <div
+            className={sidebarClass(viewMode === "all")}
+            onClick={() => loadPage("all", 0)}
+            title="Every string in this project"
+          >
+            <span>All Strings</span>
             <span className="sidebar-count">{statusCounts.total.toLocaleString()}</span>
           </div>
-          <div className="sidebar-item" onClick={() => loadPage("untranslated", 0)}>
+          <div
+            className={sidebarClass(viewMode === "untranslated")}
+            onClick={() => loadPage("untranslated", 0)}
+            title="Strings with no translation yet"
+          >
             <span>Untranslated</span>
             <span className="sidebar-count">{statusCounts.untranslated.toLocaleString()}</span>
           </div>
-          <div className="sidebar-item" onClick={() => loadPage("aidraft", 0)}>
-            <span>AI Draft</span>
-            <span className="sidebar-count" style={{ opacity: statusCounts.aiDraft === 0 ? 0.4 : 1 }}>
-              {statusCounts.aiDraft.toLocaleString()}
+          <div
+            className={sidebarClass(viewMode === "draft")}
+            onClick={() => loadPage("draft", 0)}
+            title="Strings that have text but aren't confirmed yet — AI suggestions and anything you've typed. Confirm them to include them in the exported mod."
+          >
+            <span>Drafts</span>
+            <span className="sidebar-count" style={{ opacity: statusCounts.drafts === 0 ? 0.4 : 1 }}>
+              {statusCounts.drafts.toLocaleString()}
             </span>
           </div>
-          <div className="sidebar-item" onClick={toggleTranslatedView}>
+          <div
+            className={sidebarClass(viewMode === "translated")}
+            onClick={() => loadPage("translated", 0)}
+            title="Strings you've confirmed — these are what go into the exported mod (unless flagged)"
+          >
             <span>Confirmed</span>
             <span className="sidebar-count">{statusCounts.confirmed.toLocaleString()}</span>
           </div>
-          <div className="sidebar-item" onClick={() => loadPage("outdated", 0)}>
+          <div
+            className={sidebarClass(viewMode === "outdated")}
+            onClick={() => loadPage("outdated", 0)}
+            title="Translations (confirmed or draft) that were made against an EARLIER version of the original text — the game changed the text after you translated it, usually in a patch. Select one to see exactly what changed. Confirming it again clears the warning."
+          >
             <span>⚠ Patch Changed</span>
             <span className="sidebar-count" style={{ opacity: statusCounts.outdated === 0 ? 0.4 : 1 }}>
               {statusCounts.outdated.toLocaleString()}
             </span>
           </div>
-          <div className="sidebar-item" onClick={() => loadPage("issues", 0)} title="Rows marked confirmed/AI-suggested/drafted with no actual text saved">
-            <span>⚠ Check for Issues</span>
-            <span className="sidebar-count" style={{ opacity: statusCounts.issues === 0 ? 0.4 : 1 }}>
-              {statusCounts.issues.toLocaleString()}
-            </span>
-          </div>
-          <div className="sidebar-item" onClick={() => loadPage("flagged", 0)} title="Strings you've flagged for follow-up">
+          {(statusCounts.issues > 0 || viewMode === "issues") && (
+            <div
+              className={sidebarClass(viewMode === "issues")}
+              onClick={() => loadPage("issues", 0)}
+              title="Strings marked as drafted or confirmed but with no actual text saved"
+            >
+              <span>⚠ Check for Issues</span>
+              <span className="sidebar-count">{statusCounts.issues.toLocaleString()}</span>
+            </div>
+          )}
+          <div
+            className={sidebarClass(viewMode === "flagged")}
+            onClick={() => loadPage("flagged", 0)}
+            title="Strings you've flagged for follow-up. Flagged strings are left out of the exported mod until you clear the flag."
+          >
             <span>🚩 Flagged</span>
             <span className="sidebar-count" style={{ opacity: statusCounts.flagged === 0 ? 0.4 : 1 }}>
               {statusCounts.flagged.toLocaleString()}
@@ -623,7 +776,11 @@ function App() {
 
           {categories.map((cat) => (
             <div key={cat.category}>
-              <div className="sidebar-item" onClick={() => selectCategory(cat.category)}>
+              <div
+                className={sidebarClass(viewMode === "category" && categoryFilter === cat.category)}
+                onClick={() => selectCategory(cat.category)}
+                title="Show this category. The number is how many of its strings are still untranslated."
+              >
                 <span onClick={(e) => { e.stopPropagation(); toggleCategoryExpanded(cat.category); }}>
                   {expandedCategories.has(cat.category) ? "▾ " : "▸ "}
                   {cat.category.replace(/_/g, " ")}
@@ -640,7 +797,11 @@ function App() {
                 cat.subcategories.map((sub) => (
                   <div key={sub.subcategory}>
                     <div
-                      className="sidebar-item"
+                      className={sidebarClass(
+                        viewMode === "subcategory" &&
+                          categoryFilter === cat.category &&
+                          subcategoryFilter === sub.subcategory
+                      )}
                       style={{ paddingLeft: "1.8rem" }}
                       onClick={() => selectSubcategory(cat.category, sub.subcategory)}
                     >
@@ -664,25 +825,7 @@ function App() {
         <div className="editor-column">
           <div className="editor-column-header">
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", margin: "0.5rem 0", flexWrap: "wrap" }}>
-            {rows.length > 0 && (
-              <div>
-                <button
-                  onClick={() =>
-                    loadPage(viewMode, Math.max(0, offset - BATCH_SIZE), categoryFilter ?? undefined, subcategoryFilter ?? undefined)
-                  }
-                  disabled={offset === 0}
-                >
-                  ← Previous 100
-                </button>{" "}
-                <button
-                  onClick={() =>
-                    loadPage(viewMode, offset + BATCH_SIZE, categoryFilter ?? undefined, subcategoryFilter ?? undefined)
-                  }
-                >
-                  Next 100 →
-                </button>
-              </div>
-            )}
+            {pager}
 
             {(viewMode === "category" || viewMode === "subcategory") && (
               <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
@@ -690,7 +833,7 @@ function App() {
                 {(
                   [
                     { key: "untranslated", label: "Untranslated" },
-                    { key: "ai-suggested", label: "AI Draft" },
+                    { key: "draft", label: "Drafts" },
                     { key: "human-confirmed", label: "Confirmed" },
                   ] as const
                 ).map((bucket) => {
@@ -721,10 +864,34 @@ function App() {
           </div>
           </div>
 
-          <div className="editor-row-list">
+          <div className="editor-row-list" ref={listRef}>
+          {rows.length === 0 && offset === 0 && countsReady && (
+            <div className="empty-state">
+              {statusCounts.total === 0 ? (
+                <>
+                  <h3>No strings yet</h3>
+                  <p>
+                    Vertaal hasn't read this project's {currentProject.project_type === "mod" ? "mod" : "game"} files
+                    yet. Import them to start translating.
+                  </p>
+                  <button className="build-mod-button" onClick={importFolder}>
+                    Import localisation files
+                  </button>
+                  <p className="empty-state-hint">
+                    You'll be asked to choose a folder — it opens where you told Vertaal the{" "}
+                    {currentProject.project_type === "mod" ? "mod" : "game"} lives. Pick the folder that contains the{" "}
+                    <code>_l_{currentProject.source_language}.yml</code> files (usually inside a folder called
+                    "localization"); subfolders are searched too.
+                  </p>
+                </>
+              ) : (
+                <p>{viewMode === "search" ? "No strings match your search." : "No strings in this list."}</p>
+              )}
+            </div>
+          )}
           {rows.length > 0 && (
             <div style={{ marginTop: "1rem" }}>
-              {rows.map((row, index) => {
+              {rows.map((row) => {
                 const meta = statusMeta(row);
                 const outdated = isOutdated(row);
                 const isSelected = selectedRow?.key === row.key;
@@ -768,30 +935,25 @@ function App() {
                       />
                     </div>
                     <div className="row-actions">
-                      <button
-                        className="action-btn"
-                        title={
-                          currentProviderRequiresModel && !currentProject.ai_model
-                            ? "No model configured for this provider — set one in Project Settings"
-                            : "AI translate"
-                        }
-                        disabled={currentProviderRequiresModel && !currentProject.ai_model}
-                        onClick={(e) => { e.stopPropagation(); aiTranslateRow(row); }}>
-                        AI
-                      </button>
-                      <button className="action-btn confirm" title="Confirm" onClick={(e) => { e.stopPropagation(); confirmRow(row); }}>
+                      {aiEnabled && (
+                        <button
+                          className="action-btn"
+                          title={
+                            currentProviderRequiresModel && !currentProject.ai_model
+                              ? "No model configured for this provider — set one in Project Settings"
+                              : "Translate this string with AI. The result replaces what's in the box as an AI draft (you'll be asked first if the box holds your own text)."
+                          }
+                          disabled={currentProviderRequiresModel && !currentProject.ai_model}
+                          onClick={(e) => { e.stopPropagation(); aiTranslateRow(row); }}>
+                          AI
+                        </button>
+                      )}
+                      <button className="action-btn confirm" title="Confirm this translation. If the box is empty, the original text is confirmed as-is (for names and codes that shouldn't be translated)." onClick={(e) => { e.stopPropagation(); confirmRow(row); }}>
                         ✓
                       </button>
                       <button
-                        className="action-btn confirm"
-                        title="Confirm and move to the next row"
-                        onClick={(e) => { e.stopPropagation(); confirmAndNext(row, index); }}
-                      >
-                        ⏭
-                      </button>
-                      <button
                         className={row.flagged ? "action-btn flag flagged" : "action-btn flag"}
-                        title="Flag for review"
+                        title={row.flagged ? "Remove the flag" : "Flag for review — flagged strings are left out of the exported mod until you remove the flag"}
                         onClick={(e) => { e.stopPropagation(); toggleFlag(row); }}
                       >
                         ⚑
@@ -803,32 +965,18 @@ function App() {
             </div>
           )}
 
-          {rows.length > 0 && (
-            <div style={{ margin: "0.5rem 0" }}>
-              <button
-                onClick={() =>
-                  loadPage(viewMode, Math.max(0, offset - BATCH_SIZE), categoryFilter ?? undefined, subcategoryFilter ?? undefined)
-                }
-                disabled={offset === 0}
-              >
-                ← Previous 100
-              </button>{" "}
-              <button
-                onClick={() =>
-                  loadPage(viewMode, offset + BATCH_SIZE, categoryFilter ?? undefined, subcategoryFilter ?? undefined)
-                }
-              >
-                Next 100 →
-              </button>
-            </div>
-          )}
+          {pager && <div style={{ margin: "0.5rem 0" }}>{pager}</div>}
           </div>
         </div>
 
         <div className={contextPanelOpen ? "context-panel" : "context-panel context-panel-collapsed"}>
           {contextPanelOpen && (
             <>
-              <button className="collapse-toggle" onClick={() => setContextPanelOpen(false)}>
+              <button
+                className="collapse-toggle"
+                onClick={() => setContextPanelOpen(false)}
+                title="Hide this panel to give the strings more room. A 'Details' tab appears on the right edge to bring it back."
+              >
                 Collapse →
               </button>
               {selectedRow ? (
@@ -851,10 +999,14 @@ function App() {
                     </span>
                   </div>
 
-                  {selectedRow.source_hash_at_translation !== null &&
-                    selectedRow.source_hash_at_translation !== selectedRow.source_text_hash && (
-                      <div className="context-alert context-alert-warning">⚠ Source text changed since this was translated</div>
-                    )}
+                  {isOutdated(selectedRow) && (
+                    <>
+                      <div className="context-alert context-alert-warning">
+                        ⚠ The original text changed since this was translated
+                      </div>
+                      <SourceDiff before={selectedRow.source_text_at_translation ?? ""} after={selectedRow.source_text} />
+                    </>
+                  )}
                   {selectedRow.flagged ? <div className="context-alert context-alert-flag">⚑ Flagged for review</div> : null}
 
                   {selectedRow.translated_by && (
@@ -874,7 +1026,14 @@ function App() {
 
                   <div className="context-field">
                     <div className="context-field-label">Category</div>
-                    <div>{categoryFilter ?? "—"}</div>
+                    <div>
+                      {selectedRow.category
+                        ? selectedRow.category.replace(/_/g, " ") +
+                          (selectedRow.subcategory && selectedRow.subcategory !== "general"
+                            ? ` › ${selectedRow.subcategory.replace(/_/g, " ")}`
+                            : "")
+                        : "—"}
+                    </div>
                   </div>
                   <div className="context-field">
                     <div className="context-field-label">Source file</div>
@@ -917,6 +1076,16 @@ function App() {
             </>
           )}
         </div>
+
+        {!contextPanelOpen && (
+          <button
+            className="context-panel-reopen"
+            onClick={() => setContextPanelOpen(true)}
+            title="Show the details panel again"
+          >
+            ◀ Details
+          </button>
+        )}
       </div>
 
       <div className="status-bar">
@@ -928,7 +1097,7 @@ function App() {
           </span>
           <span>
             <span className="status-dot" style={{ background: "var(--status-ai-draft)" }} />
-            {statusCounts.aiDraft.toLocaleString()} AI draft
+            {statusCounts.drafts.toLocaleString()} drafts
           </span>
           <span>
             <span className="status-dot" style={{ background: "var(--status-confirmed)" }} />
@@ -937,10 +1106,20 @@ function App() {
           <span>{statusCounts.total.toLocaleString()} total strings</span>
         </div>
       </div>
+      {showAppSettings && (
+        <AppSettings
+          contributorName={contributorName}
+          onSaved={setContributorNameState}
+          onClose={() => setShowAppSettings(false)}
+        />
+      )}
       {panels.glossary && currentProject && (
         <GlossaryManager
           gameId={currentProject.game_id}
           targetLanguage={currentProject.target_language}
+          isModProject={currentProject.project_type === "mod"}
+          providerName={provider ? provider.displayName : null}
+          providerSupportsGlossary={provider?.supportsGlossary ?? false}
           onClose={() => closePanel("glossary")}
           onViewOccurrences={(term) => {
             closePanel("glossary");

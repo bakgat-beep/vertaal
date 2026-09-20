@@ -6,7 +6,38 @@ import type { Project } from "./types";
 import { GAME_ADAPTERS } from "./games";
 import { escapeForLocExport } from "./parser";
 import { buildCompanionDescriptor } from "./modExport";
-import type { ExportOutcome } from "./ExportSummary";
+import type { ExportOutcome, ExportPreflight } from "./ExportSummary";
+import { SQL_OUTDATED } from "./statusFilters";
+
+// The ONE definition of "this string goes into the exported mod": it is
+// confirmed by a human, has actual text, and is NOT flagged. Both exporters
+// and the "Ready to export?" summary use this same text, so the summary can
+// never promise something different from what the export really does.
+// (Flagged strings are deliberately held back: a flag means "needs another
+// look", so it shouldn't ship until the flag is cleared.)
+export const SQL_EXPORTABLE =
+  "t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != '' AND COALESCE(t.flagged, 0) = 0";
+
+// Numbers for the "Ready to export?" dialog. `confirmed` is what will really
+// be written; `flagged` is confirmed strings being held back by their flag;
+// `outdated` is how many of the exported strings were confirmed before their
+// source text changed.
+export async function getExportPreflight(project: Project): Promise<ExportPreflight> {
+  const db = await getDb();
+  const result = (await db.select(
+    `SELECT
+       (SELECT COUNT(*) FROM strings WHERE game_id = $1) AS total,
+       COALESCE(SUM(CASE WHEN ${SQL_EXPORTABLE} THEN 1 ELSE 0 END), 0) AS confirmed,
+       COALESCE(SUM(CASE WHEN ${SQL_EXPORTABLE} AND ${SQL_OUTDATED} THEN 1 ELSE 0 END), 0) AS outdated,
+       COALESCE(SUM(CASE WHEN t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
+         AND t.flagged = 1 THEN 1 ELSE 0 END), 0) AS flagged
+     FROM strings s
+     JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
+     WHERE s.game_id = $1 AND t.target_language = $2`,
+    [project.game_id, project.target_language]
+  )) as ExportPreflight[];
+  return result[0];
+}
 
 // Both exportMod() and exportModCompanion() write the same shape of output —
 // one loc file per relPath, each entry as "key: "text"" — just built from a
@@ -74,7 +105,7 @@ export async function exportMod(currentProject: Project, onStatus: (msg: string)
       `SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
        FROM strings s
        JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-       WHERE t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
+       WHERE ${SQL_EXPORTABLE}
          AND s.game_id = $1 AND t.target_language = $2`,
       [currentProject.game_id, currentProject.target_language]
     )) as { key: string; file_path: string; translated_text: string }[];
@@ -157,7 +188,7 @@ export async function exportModCompanion(
       `SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
        FROM strings s
        JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-       WHERE t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
+       WHERE ${SQL_EXPORTABLE}
          AND s.game_id = $1 AND t.target_language = $2`,
       [currentProject.game_id, currentProject.target_language]
     )) as { key: string; file_path: string; translated_text: string }[];

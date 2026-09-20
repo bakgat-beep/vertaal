@@ -115,6 +115,18 @@ pub fn run() {
             sql: include_str!("../migrations/0018_glossary_status.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
+        tauri_plugin_sql::Migration {
+            version: 19,
+            description: "source_text_at_translation",
+            sql: include_str!("../migrations/0019_source_text_at_translation.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+        tauri_plugin_sql::Migration {
+            version: 20,
+            description: "compact_change_tracking",
+            sql: include_str!("../migrations/0020_compact_change_tracking.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

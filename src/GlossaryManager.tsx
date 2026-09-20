@@ -20,11 +20,29 @@ interface Props {
   // Jumps to the main editor, searching for the given term — used by the
   // "N strings" usage count both in the table and the details panel.
   onViewOccurrences: (term: string) => void;
+  // True for a mod-translation project: the base game's glossary is applied
+  // automatically as well (see loadGlossaryTerms), and "this game" really
+  // means "this mod".
+  isModProject?: boolean;
+  // The project's translation provider, so the manager can warn when nothing
+  // will actually apply the glossary. undefined = don't say anything; null =
+  // the project is manual-only (no AI provider); a name = that provider.
+  providerName?: string | null;
+  providerSupportsGlossary?: boolean;
 }
 
 const PAGE_SIZE = 50;
 
-export default function GlossaryManager({ gameId, targetLanguage, onClose, onViewOccurrences }: Props) {
+export default function GlossaryManager({
+  gameId,
+  targetLanguage,
+  onClose,
+  onViewOccurrences,
+  isModProject = false,
+  providerName,
+  providerSupportsGlossary = true,
+}: Props) {
+  const scopeWord = isModProject ? "mod" : "game";
   const [terms, setTerms] = useState<GlossaryRow[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loaded, setLoaded] = useState(false);
@@ -270,7 +288,23 @@ export default function GlossaryManager({ gameId, targetLanguage, onClose, onVie
       <div className="welcome-window" style={{ width: "980px" }}>
         <div className="welcome-title">
           <h1 style={{ marginBottom: 0 }}>Glossary</h1>
-          <p style={{ color: "var(--text-dim)" }}>Terms marked "shared" apply across all games; others apply only to this game.</p>
+          <p style={{ color: "var(--text-dim)" }}>
+            Terms marked "shared" apply across all games; others apply only to this {scopeWord}.
+            {isModProject &&
+              " The base game's own glossary is also applied automatically (it isn't listed here) — add a term here to override one of its translations for this mod."}
+          </p>
+          {providerName === null && (
+            <p className="glossary-save-message" style={{ color: "var(--status-ai-draft)" }}>
+              ⚠ This project is set to manual translation (no AI provider), so nothing here is sent to a translator —
+              the glossary is just a reference for your own edits.
+            </p>
+          )}
+          {providerName && !providerSupportsGlossary && (
+            <p className="glossary-save-message" style={{ color: "var(--status-ai-draft)" }}>
+              ⚠ {providerName} can't apply glossary terms, so nothing here is sent to it when translating — the glossary
+              is just a reference for your own edits. TranslateGemma (Ollama) and OpenAI-compatible providers do apply it.
+            </p>
+          )}
         </div>
 
         <div style={{ marginBottom: "1rem" }}>
@@ -290,8 +324,18 @@ export default function GlossaryManager({ gameId, targetLanguage, onClose, onVie
           <label style={{ fontSize: "0.8rem" }}>
             <input type="checkbox" checked={bulkShared} onChange={(e) => setBulkShared(e.target.checked)} /> Shared across games
           </label>{" "}
-          <button onClick={handleBulkImport}>Bulk Add / Update</button>{" "}
-          <button onClick={handleExportGlossary}>Export Whole Glossary to File</button>
+          <button
+            onClick={handleBulkImport}
+            title={`Adds every pasted pair to this ${scopeWord}'s glossary (or to the shared glossary if the box is ticked). Terms that already exist are updated, not duplicated.`}
+          >
+            Bulk Add / Update
+          </button>{" "}
+          <button
+            onClick={handleExportGlossary}
+            title="Saves every term you can see here to a text file you can edit in a spreadsheet and paste back in."
+          >
+            Export Whole Glossary to File
+          </button>
           {bulkStatus && <p style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>{bulkStatus}</p>}
         </div>
 
@@ -315,7 +359,12 @@ export default function GlossaryManager({ gameId, targetLanguage, onClose, onVie
           <div className="glossary-bulk-toolbar">
             <strong>{selectedIds.size} selected</strong>
             <button onClick={() => handleBulkStatus("preferred")}>Mark Preferred</button>
-            <button onClick={() => handleBulkStatus("review")}>Mark Needs Review</button>
+            <button
+              onClick={() => handleBulkStatus("review")}
+              title="Needs-review terms stay in your list but are NOT sent to the AI translator until marked Preferred again."
+            >
+              Mark Needs Review
+            </button>
             <button onClick={handleBulkDelete}>Delete</button>
             <button className="text-link-button" onClick={() => setSelectedIds(new Set())}>
               Clear selection
@@ -333,9 +382,13 @@ export default function GlossaryManager({ gameId, targetLanguage, onClose, onVie
                   </th>
                   <th>English</th>
                   <th>Translated</th>
-                  <th>Status</th>
-                  <th>Shared</th>
-                  <th>Usage</th>
+                  <th title="Preferred terms are applied by the AI translator. Needs-review terms are kept but not applied.">
+                    Status
+                  </th>
+                  <th title="Ticked = applies to every game, not just this one">Shared</th>
+                  <th title="How many of this project's strings contain the term as a whole word — the same test the translator uses.">
+                    Usage
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -412,6 +465,10 @@ export default function GlossaryManager({ gameId, targetLanguage, onClose, onVie
                     <option value="review">Needs review</option>
                   </select>
                 </div>
+                <p style={{ fontSize: "0.75rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
+                  Preferred terms are applied when the AI translates. Needs-review terms are kept in the list but not
+                  applied until you mark them Preferred.
+                </p>
                 {!draftTranslated.trim() && (
                   <p style={{ fontSize: "0.75rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
                     Shows as "Untranslated" in the list until a translation is entered, regardless of status.
@@ -422,7 +479,10 @@ export default function GlossaryManager({ gameId, targetLanguage, onClose, onVie
                   <textarea rows={3} value={draftNotes} onChange={(e) => setDraftNotes(e.target.value)} />
                 </div>
                 <div className="form-row">
-                  <label style={{ fontWeight: "normal" }}>
+                  <label
+                    style={{ fontWeight: "normal" }}
+                    title={`Ticked: this term applies to every game. Unticked: it applies only to this ${scopeWord}.`}
+                  >
                     <input type="checkbox" checked={draftShared} onChange={(e) => setDraftShared(e.target.checked)} /> Shared
                     across games
                   </label>

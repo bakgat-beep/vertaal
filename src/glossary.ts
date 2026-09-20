@@ -1,4 +1,5 @@
 import { getDb } from "./db";
+import { protectTokens } from "./parser";
 
 export interface GlossaryTerm {
   id: number;
@@ -6,6 +7,10 @@ export interface GlossaryTerm {
   translated_term: string;
   game_id: string | null;
   target_language: string;
+  // Set by loadGlossaryTerms: which scope the term came from, so that when the
+  // same English word exists in several places the most specific one wins.
+  // 3 = this project's own (a mod's) terms, 2 = the base game's terms, 1 = shared.
+  priority?: number;
 }
 
 // Shape passed to addGlossaryTerm/updateGlossaryTerm for the newer fields.
@@ -43,42 +48,125 @@ export async function addGlossaryTerm(
   await db.execute(`INSERT INTO glossary (${columns.join(", ")}) VALUES (${placeholders})`, params);
 }
 
+// Loads the terms the AI should actually be told about for a project:
+//  - this project's own terms, plus shared ones (game_id NULL);
+//  - for a MOD project, also the base game's terms (so the mod stays
+//    consistent with a vanilla translation); the mod's own version of a term
+//    wins if both exist;
+//  - only terms marked "Preferred" — "Needs review" terms are not enforced;
+//  - only terms that actually have a translation (an empty one would produce
+//    the instruction 'must be translated as ""').
 export async function loadGlossaryTerms(gameId: string, targetLanguage: string): Promise<GlossaryTerm[]> {
   const db = await getDb();
-  // Game-specific terms and shared (game_id IS NULL) terms both apply.
+
+  const parentRows = (await db.select("SELECT parent_game_id FROM projects WHERE game_id = $1 LIMIT 1", [
+    gameId,
+  ])) as { parent_game_id: string | null }[];
+  const parentId = parentRows[0]?.parent_game_id;
+  const baseGameId = parentId && parentId !== gameId ? parentId : null;
+
   return (await db.select(
-    `SELECT id, english_term, translated_term, game_id, target_language FROM glossary
-     WHERE target_language = $1 AND (game_id = $2 OR game_id IS NULL)`,
-    [targetLanguage, gameId]
+    `SELECT id, english_term, translated_term, game_id, target_language,
+            CASE WHEN game_id = $2 THEN 3 WHEN game_id = $3 THEN 2 ELSE 1 END AS priority
+     FROM glossary
+     WHERE target_language = $1
+       AND (game_id = $2 OR game_id IS NULL OR game_id = $3)
+       AND status = 'preferred'
+       AND TRIM(translated_term) != ''
+       AND TRIM(english_term) != ''`,
+    [targetLanguage, gameId, baseGameId]
   )) as GlossaryTerm[];
 }
 
-// Game-specific terms override shared ones for the same English word, and
-// longer matched phrases win over shorter ones they contain (e.g. "peace
-// treaty" wins over "peace" when both would otherwise match).
-export function matchGlossaryTerms(sourceText: string, terms: GlossaryTerm[]): GlossaryTerm[] {
-  const lowerSource = sourceText.toLowerCase();
+// ---- Matching ----
+//
+// A term matches only as a WHOLE WORD (or words), so "war" is found in "The
+// war ended" and "Wars" but NOT inside "warrant" or "swarm". A plain English
+// plural ending (-s / -es) is allowed. Text inside game code (icons like
+// £gold£, variables like $GOLD$, [functions]) is ignored — those aren't words
+// to translate. Letters from any language count as word characters, so
+// "cafe" does not match inside "café".
 
+const WORD_CHARS = "\\p{L}\\p{N}_";
+const termPatternCache = new Map<string, { lower: string; regex: RegExp }>();
+
+// One compiled pattern per term, reused (compiling thousands of patterns for
+// every string in a big batch would be far too slow). NOTE: these patterns are
+// shared, so only ever use them through matchAll (which works on a copy) —
+// never .test() or .exec(), which would carry state from one string to the next.
+function termPattern(term: string): { lower: string; regex: RegExp } {
+  const trimmed = term.trim();
+  const key = trimmed.toLowerCase();
+  let entry = termPatternCache.get(key);
+  if (!entry) {
+    entry = {
+      lower: key,
+      regex: new RegExp(`(?<![${WORD_CHARS}])${escapeRegExp(trimmed)}(?:s|es)?(?![${WORD_CHARS}])`, "giu"),
+    };
+    termPatternCache.set(key, entry);
+  }
+  return entry;
+}
+
+// The source text with game code blanked out, leaving only translatable words.
+function plainText(sourceText: string): string {
+  return protectTokens(sourceText).text.replace(/__TOKEN_\d+__/g, " ");
+}
+
+// Every place the term appears as a whole word: [start, end) positions.
+function findTermSpans(plain: string, term: string, lowerPlain: string = plain.toLowerCase()): [number, number][] {
+  const { lower, regex } = termPattern(term);
+  // Cheap check first — almost every term is absent from almost every string.
+  if (!lowerPlain.includes(lower)) return [];
+  return [...plain.matchAll(regex)].map((m) => [m.index!, m.index! + m[0].length] as [number, number]);
+}
+
+// The usable terms with duplicates resolved (most specific scope wins). A batch
+// passes the same list for every string, so the result is remembered per list
+// instead of being rebuilt thousands of times. (The list must not be edited
+// after it's first used — loadGlossaryTerms always returns a fresh one.)
+const usableTermsCache = new WeakMap<GlossaryTerm[], GlossaryTerm[]>();
+function usableTerms(terms: GlossaryTerm[], rank: (t: GlossaryTerm) => number): GlossaryTerm[] {
+  const cached = usableTermsCache.get(terms);
+  if (cached) return cached;
   const byTerm = new Map<string, GlossaryTerm>();
   for (const t of terms) {
-    const key = t.english_term.toLowerCase();
+    if (!t.english_term.trim() || !t.translated_term.trim()) continue;
+    const key = t.english_term.trim().toLowerCase();
     const existing = byTerm.get(key);
-    if (!existing || (t.game_id !== null && existing.game_id === null)) {
-      byTerm.set(key, t);
-    }
+    if (!existing || rank(t) > rank(existing)) byTerm.set(key, t);
   }
-  const deduped = Array.from(byTerm.values());
+  const result = Array.from(byTerm.values());
+  usableTermsCache.set(terms, result);
+  return result;
+}
 
-  const matched = deduped.filter((t) => lowerSource.includes(t.english_term.toLowerCase()));
+// Game-specific terms override shared ones for the same English word (and a
+// mod's own term overrides the base game's), and longer matched phrases win
+// over shorter ones they overlap (e.g. "peace treaty" wins over "peace" when
+// both would otherwise match — but a separate, standalone "peace" elsewhere in
+// the same string still counts).
+export function matchGlossaryTerms(sourceText: string, terms: GlossaryTerm[]): GlossaryTerm[] {
+  const plain = plainText(sourceText);
+  const lowerPlain = plain.toLowerCase();
+  const rank = (t: GlossaryTerm) => t.priority ?? (t.game_id === null ? 1 : 2);
 
-  return matched.filter(
-    (t) =>
-      !matched.some(
-        (other) =>
-          other.english_term !== t.english_term &&
-          other.english_term.toLowerCase().includes(t.english_term.toLowerCase())
+  const hits = usableTerms(terms, rank)
+    .map((t) => ({ term: t, spans: findTermSpans(plain, t.english_term, lowerPlain) }))
+    .filter((h) => h.spans.length > 0);
+
+  return hits
+    .filter((h) =>
+      h.spans.some(
+        ([start, end]) =>
+          !hits.some(
+            (other) =>
+              other !== h &&
+              other.spans.some(([os, oe]) => os <= start && end <= oe && oe - os > end - start)
+          )
       )
-  );
+    )
+    .map((h) => h.term);
 }
 
 export interface GlossaryRow {
@@ -153,18 +241,22 @@ export async function countGlossaryTerms(gameId: string, targetLanguage: string,
   return result[0]?.count ?? 0;
 }
 
-// How many of this game's source strings actually contain the term — the
-// "N strings" usage count shown per glossary row. Deliberately checks only
-// the source text (not translated_text): a glossary term is a source-
-// language word, so "usage" means how often it appears in the English
-// strings, not the target-language output.
+// How many of this game's source strings contain the term — the "N strings"
+// usage count shown per glossary row. Counted the same way the translator
+// matches terms (whole words, ignoring game code), so the number reflects
+// where the term will really be applied. Deliberately checks only the source
+// text: a glossary term is a source-language word.
 export async function countGlossaryTermUsage(gameId: string, englishTerm: string): Promise<number> {
+  const term = englishTerm.trim();
+  if (!term) return 0;
   const db = await getDb();
-  const result = (await db.select("SELECT COUNT(*) as count FROM strings WHERE game_id = $1 AND source_text LIKE $2", [
-    gameId,
-    `%${englishTerm}%`,
-  ])) as { count: number }[];
-  return result[0]?.count ?? 0;
+  // The database narrows it down quickly (any string containing the letters);
+  // the exact whole-word check then runs on just those candidates.
+  const candidates = (await db.select(
+    "SELECT source_text FROM strings WHERE game_id = $1 AND source_text LIKE $2 ESCAPE '\\' LIMIT 50000",
+    [gameId, `%${term.replace(/[\\%_]/g, "\\$&")}%`]
+  )) as { source_text: string }[];
+  return candidates.filter((c) => findTermSpans(plainText(c.source_text), term).length > 0).length;
 }
 
 export async function updateGlossaryTerm(
@@ -210,10 +302,10 @@ function matchCase(sourceOccurrence: string, translated: string): string {
 }
 
 export function buildGlossaryInstructions(sourceText: string, matchedTerms: GlossaryTerm[]): string[] {
+  const plain = plainText(sourceText);
   return matchedTerms.map((t) => {
-    const regex = new RegExp(escapeRegExp(t.english_term), "i");
-    const match = sourceText.match(regex);
-    const occurrence = match ? match[0] : t.english_term;
+    const spans = findTermSpans(plain, t.english_term);
+    const occurrence = spans.length > 0 ? plain.slice(spans[0][0], spans[0][1]) : t.english_term;
     const adjusted = matchCase(occurrence, t.translated_term);
     return `- "${occurrence}" must be translated as "${adjusted}"`;
   });

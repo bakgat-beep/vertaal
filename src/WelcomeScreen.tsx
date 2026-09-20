@@ -11,6 +11,9 @@ import logoFull from "./assets/logo-full-white.png";
 
 interface Props {
   onProjectSelected: (project: Project) => void;
+  // Opens the app-wide settings window (owned by App, since it also needs to
+  // appear inside a project).
+  onOpenAppSettings?: () => void;
 }
 
 interface RecentProject extends Project {
@@ -34,7 +37,7 @@ function ProjectSummary({ p }: { p: RecentProject | Project }) {
   );
 }
 
-export default function WelcomeScreen({ onProjectSelected }: Props) {
+export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: Props) {
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [hiddenProjects, setHiddenProjects] = useState<Project[]>([]);
   const [showHiddenList, setShowHiddenList] = useState(false);
@@ -186,16 +189,20 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
                       <button
                         className="text-link-button"
                         onClick={(e) => handleRemoveFromRecent(e, p.id)}
-                        title="Remove from Recent Projects (keeps the project and its data — can be undone in Project Settings)"
+                        title="Hide this project from the list. Nothing is deleted — the project and its translations are kept, and you can bring it back from 'Show hidden projects' below or in Project Settings."
                       >
-                        Remove
+                        Hide
                       </button>
                     </div>
                   </div>
                 ))}
 
                 <div className="welcome-actions">
-                  <button className="build-mod-button" onClick={() => setView("new-project")}>
+                  <button
+                    className="build-mod-button"
+                    onClick={() => setView("new-project")}
+                    title="Start translating a game (or a mod for a game) into a new language"
+                  >
                     + New Project
                   </button>
                   <button
@@ -203,8 +210,9 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
                       setImportStatus("");
                       setView("import-project");
                     }}
+                    title="Merge translations someone shared with you (a Vertaal .json file) into a project you already have. It can't create a project by itself."
                   >
-                    Import Project
+                    Merge Shared Translations
                   </button>
                 </div>
               </>
@@ -222,7 +230,9 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
             {hiddenProjects.length > 0 && (
               <div className="hidden-projects-toggle">
                 <button className="text-link-button" onClick={() => setShowHiddenList(!showHiddenList)}>
-                  {showHiddenList ? "Hide" : `Show ${hiddenProjects.length} hidden project${hiddenProjects.length === 1 ? "" : "s"}`}
+                  {showHiddenList
+                    ? "Hide this list"
+                    : `Show ${hiddenProjects.length} hidden project${hiddenProjects.length === 1 ? "" : "s"}`}
                 </button>
                 {showHiddenList &&
                   hiddenProjects.map((p) => (
@@ -255,10 +265,11 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
             <button className="text-link-button welcome-back-link" onClick={() => setView("hub")}>
               ← Back to Projects
             </button>
-            <h2 className="welcome-heading compact">Import into which project?</h2>
+            <h2 className="welcome-heading compact">Merge into which project?</h2>
             <p className="import-hint">
-              Pick the project to merge translations into, then choose the exported file. Only strings that
-              already exist in that project are affected — nothing is overwritten unless the imported version
+              Pick the project to merge translations into, then choose the shared file. The file must be for the
+              same game and language, and the project needs its game files imported already. Only strings that
+              already exist in that project are affected — nothing is overwritten unless the shared version
               is newer.
             </p>
             {importStatus && <p className="import-status">{importStatus}</p>}
@@ -279,15 +290,24 @@ export default function WelcomeScreen({ onProjectSelected }: Props) {
             onClick={handleBackupNow}
             title="Save a full backup copy of the entire app database (every project, every game)"
           >
-            Backup App
+            Back up all app data
           </button>
           <button
             className="text-link-button"
             onClick={handleRestoreNow}
             title="Replace the entire app database with a previously-saved backup file"
           >
-            Restore App
+            Restore from backup
           </button>
+          {onOpenAppSettings && (
+            <button
+              className="text-link-button"
+              onClick={onOpenAppSettings}
+              title="Your name and other settings that apply to the whole app"
+            >
+              App Settings
+            </button>
+          )}
         </div>
         {maintenanceStatus && <p className="maintenance-status">{maintenanceStatus}</p>}
       </div>

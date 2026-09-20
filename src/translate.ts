@@ -2,12 +2,32 @@ import { getDb } from "./db";
 import type { Project } from "./types";
 import { protectTokens, restoreTokens, validateTokensPreserved } from "./parser";
 import { loadGlossaryTerms, matchGlossaryTerms, buildGlossaryInstructions, type GlossaryTerm } from "./glossary";
-import { TRANSLATION_PROVIDERS } from "./providers";
+import { getProjectProvider } from "./providers";
 import { getProviderCredentials } from "./providers/credentials.ts";
 import { GAME_ADAPTERS } from "./games";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Marks a string as "needs a human look" after an AI attempt failed — WITHOUT
+// touching any translation the string already has. (Previously a failed AI
+// attempt overwrote the row with empty text and an "untranslated" status,
+// which silently wiped an existing confirmed translation or draft.) If the
+// string has no translation row yet, one is created empty and flagged.
+async function flagForReview(
+  db: Awaited<ReturnType<typeof getDb>>,
+  key: string,
+  gameId: string,
+  targetLanguage: string,
+  attribution: string
+) {
+  await db.execute(
+    `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged)
+     VALUES ($1, $2, $3, '', 'untranslated', $4, datetime('now'), 1)
+     ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET flagged = 1`,
+    [key, gameId, targetLanguage, attribution]
+  );
 }
 
 // Sends one string to the project's configured translation provider, protects
@@ -27,9 +47,15 @@ export async function translateAndSave(
   preloadedGlossaryTerms?: GlossaryTerm[]
 ): Promise<{ ok: boolean; error?: string }> {
   if (!currentProject) return { ok: false, error: "No project loaded." };
-  const provider = TRANSLATION_PROVIDERS[currentProject.translation_provider_id ?? "ollama"];
+  const provider = getProjectProvider(currentProject);
   if (!provider) {
-    return { ok: false, error: `No translation provider registered for "${currentProject.translation_provider_id}".` };
+    return {
+      ok: false,
+      error:
+        currentProject.translation_provider_id === "none"
+          ? "This project is set to manual translation only. Choose a translation provider in Project Settings to use AI translation."
+          : `No translation provider registered for "${currentProject.translation_provider_id}".`,
+    };
   }
   if (provider.requiresModel && !currentProject.ai_model) {
     return { ok: false, error: `No model configured for ${provider.displayName} — set one in Project Settings.` };
@@ -78,33 +104,32 @@ export async function translateAndSave(
     const db = await getDb();
     const attribution = currentProject.ai_model ?? provider.displayName;
 
-    const currentHashRow = (await db.select(
-      "SELECT source_text_hash FROM strings WHERE key = $1 AND game_id = $2",
-      [key, gameId]
-    )) as { source_text_hash: string }[];
-    const currentHash = currentHashRow[0]?.source_text_hash ?? null;
-
     if (!validateTokensPreserved(rawTranslation, tokens.length)) {
-      await db.execute(
-        `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
-         VALUES ($1, $2, $3, '', 'untranslated', $4, datetime('now'), 1, $5)`,
-        [key, gameId, currentProject.target_language, attribution, currentHash]
-      );
+      await flagForReview(db, key, gameId, currentProject.target_language, attribution);
       return { ok: false, error: "AI response did not preserve required game codes/tokens — flagged for manual review." };
     }
 
     const finalTranslation = restoreTokens(rawTranslation, tokens);
 
+    // Remember what was there before, so History shows a true before/after.
+    const previous = (await db.select(
+      "SELECT translated_text FROM translations WHERE string_key = $1 AND game_id = $2 AND target_language = $3",
+      [key, gameId, currentProject.target_language]
+    )) as { translated_text: string | null }[];
+    const previousText = previous[0]?.translated_text ?? "";
+
     await db.execute(
-      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
+      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_text_at_translation)
        VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
-      [key, gameId, currentProject.target_language, finalTranslation, attribution, key, gameId, currentProject.target_language, currentHash]
+      // The exact source text that was just translated is recorded, so any
+      // later change to it — however small — is noticed.
+      [key, gameId, currentProject.target_language, finalTranslation, attribution, key, gameId, currentProject.target_language, sourceText]
     );
 
     await db.execute(
       `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [key, gameId, currentProject.target_language, "", finalTranslation, attribution]
+      [key, gameId, currentProject.target_language, previousText, finalTranslation, attribution]
     );
 
     return { ok: true };
@@ -148,17 +173,7 @@ export async function translateWithRetry(
   if (currentProject) {
     try {
       const db = await getDb();
-      const currentHashRow = (await db.select(
-        "SELECT source_text_hash FROM strings WHERE key = $1 AND game_id = $2",
-        [key, gameId]
-      )) as { source_text_hash: string }[];
-      const currentHash = currentHashRow[0]?.source_text_hash ?? null;
-
-      await db.execute(
-        `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
-         VALUES ($1, $2, $3, '', 'untranslated', $4, datetime('now'), 1, $5)`,
-        [key, gameId, currentProject.target_language, currentProject.ai_model ?? "", currentHash]
-      );
+      await flagForReview(db, key, gameId, currentProject.target_language, currentProject.ai_model ?? "");
     } catch {
     }
   }

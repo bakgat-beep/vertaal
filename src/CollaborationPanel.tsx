@@ -7,6 +7,7 @@ import { getGithubToken, setGithubToken } from "./settings";
 import { exportPortableProjectData } from "./portableExport";
 import { importPortableProjectData } from "./mergeImport";
 import { getDb } from "./db";
+import { portableExportFileName } from "./fileNames";
 
 interface Props {
   project: Project;
@@ -31,7 +32,7 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
   }, []);
 
   function exportFileName() {
-    return `${project.game_id}-${project.target_language}-vertaal-export.json`;
+    return portableExportFileName(project);
   }
 
   async function saveProjectField(field: "git_repo_path" | "git_remote_url", value: string) {
@@ -148,6 +149,12 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
           <p style={{ color: "var(--text-dim)" }}>
             Sync this project's translations with a Git repository so others can contribute.
           </p>
+          <p style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
+            <strong>Sync</strong> saves your translations into the folder below and uploads them to the shared
+            repository. <strong>Pull + Merge</strong> downloads what your collaborators uploaded and merges it into
+            this project — anything you edited more recently is kept. Set the folder and repository up once, then
+            just use those two buttons.
+          </p>
         </div>
 
         {gitAvailable === null && (
@@ -164,7 +171,12 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
           <div className="form-label">Local folder</div>
           <div style={{ flexGrow: 1, display: "flex", gap: "0.5rem" }}>
             <input value={repoPath} readOnly style={{ flexGrow: 1 }} />
-            <button onClick={handleChooseFolder}>Browse…</button>
+            <button
+              onClick={handleChooseFolder}
+              title="Choose the folder on your computer that holds (or will hold) the shared repository's files"
+            >
+              Browse…
+            </button>
           </div>
         </div>
 
@@ -179,7 +191,11 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
                   placeholder="https://github.com/username/repo.git"
                   style={{ flexGrow: 1 }}
                 />
-                <button onClick={handleClone} disabled={busy}>
+                <button
+                  onClick={handleClone}
+                  disabled={busy}
+                  title="Download an existing shared repository (one a collaborator or you already set up on GitHub) into the folder above"
+                >
                   Clone
                 </button>
               </div>
@@ -187,7 +203,11 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
 
             <div className="form-row">
               <div className="form-label">Or start fresh</div>
-              <button onClick={handleInit} disabled={busy}>
+              <button
+                onClick={handleInit}
+                disabled={busy}
+                title="Turn the folder above into a brand-new repository. Use this only if nobody has created one for this project yet."
+              >
                 Initialize New Repo Here
               </button>
             </div>
@@ -201,7 +221,11 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
                   placeholder="https://github.com/username/repo.git"
                   style={{ flexGrow: 1 }}
                 />
-                <button onClick={handleSetRemote} disabled={busy}>
+                <button
+                  onClick={handleSetRemote}
+                  disabled={busy}
+                  title="Tell this repository which GitHub address to upload to and download from (the 'remote')"
+                >
                   Set Remote
                 </button>
               </div>
@@ -218,15 +242,30 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
                   placeholder={hasToken ? "Saved (enter a new one to replace)" : "Personal access token"}
                   style={{ flexGrow: 1 }}
                 />
-                <button onClick={handleSaveToken}>Save</button>
+                <button
+                  onClick={handleSaveToken}
+                  title="Saves your GitHub access token (a password-like key that lets Vertaal upload for you). It's shared by all your projects."
+                >
+                  Save
+                </button>
               </div>
             </div>
 
             <div className="welcome-footer" style={{ justifyContent: "flex-start", gap: "0.5rem" }}>
-              <button className="build-mod-button" onClick={handleSync} disabled={busy}>
+              <button
+                className="build-mod-button"
+                onClick={handleSync}
+                disabled={busy}
+                title="Upload your work: saves your translations to the shared folder, records them in Git, and pushes them to GitHub"
+              >
                 Sync (Export + Commit + Push)
               </button>
-              <button className="build-mod-button" onClick={handlePull} disabled={busy}>
+              <button
+                className="build-mod-button"
+                onClick={handlePull}
+                disabled={busy}
+                title="Download your collaborators' work from GitHub and merge it into this project. Strings you edited more recently are kept as they are."
+              >
                 Pull + Merge
               </button>
             </div>

@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Project } from "../types";
 import { type CategoryCount } from "../App";
 import { getDb } from "../db";
+import { SQL_UNTRANSLATED, SQL_DRAFT, SQL_CONFIRMED, SQL_OUTDATED, SQL_ISSUES } from "../statusFilters";
 
 // Holds project-wide stats (statusCounts) and the sidebar category/subcategory
 // tree (categories, expandedCategories), plus the functions that load and
@@ -11,7 +12,7 @@ import { getDb } from "../db";
 export function useProjectStats(currentProject: Project | null) {
   const [statusCounts, setStatusCounts] = useState({
     untranslated: 0,
-    aiDraft: 0,
+    drafts: 0,
     confirmed: 0,
     total: 0,
     outdated: 0,
@@ -28,7 +29,7 @@ export function useProjectStats(currentProject: Project | null) {
     const rows = (await db.select(
       `SELECT s.category as category, s.subcategory as subcategory,
               COUNT(*) as total,
-              SUM(CASE WHEN t.status IS NULL OR t.status = 'untranslated' THEN 1 ELSE 0 END) as untranslated
+              SUM(CASE WHEN ${SQL_UNTRANSLATED} THEN 1 ELSE 0 END) as untranslated
        FROM strings s
        LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
        WHERE s.category IS NOT NULL AND s.game_id = $2
@@ -63,34 +64,36 @@ export function useProjectStats(currentProject: Project | null) {
     });
   }
 
+  // Every number here is counted from the strings themselves (joined to their
+  // translation, if any) using the shared definitions in statusFilters.ts, so
+  // each count always matches the list you get by clicking it.
   async function refreshCounts() {
     if (!currentProject) return;
     const db = await getDb();
     const result = (await db.select(
       `SELECT
-         (SELECT COUNT(*) FROM strings WHERE game_id = $1) as total,
-         (SELECT COUNT(*) FROM translations WHERE status = 'human-confirmed' AND game_id = $1 AND target_language = $2) as confirmed,
-         (SELECT COUNT(*) FROM translations WHERE status = 'ai-suggested' AND game_id = $1 AND target_language = $2) as ai_draft,
-         (SELECT COUNT(*) FROM translations t JOIN strings s ON t.string_key = s.key AND t.game_id = s.game_id
-           WHERE t.game_id = $1 AND t.target_language = $2
-           AND t.source_hash_at_translation IS NOT NULL AND t.source_hash_at_translation != s.source_text_hash) as outdated,
-         (SELECT COUNT(*) FROM translations WHERE game_id = $1 AND target_language = $2
-           AND status IN ('human-confirmed', 'ai-suggested', 'human-draft')
-           AND (translated_text IS NULL OR TRIM(translated_text) = '')) as issues,
-         (SELECT COUNT(*) FROM translations WHERE game_id = $1 AND target_language = $2 AND flagged = 1) as flagged`,
+         COUNT(*) AS total,
+         COALESCE(SUM(CASE WHEN ${SQL_UNTRANSLATED} THEN 1 ELSE 0 END), 0) AS untranslated,
+         COALESCE(SUM(CASE WHEN ${SQL_DRAFT} THEN 1 ELSE 0 END), 0) AS drafts,
+         COALESCE(SUM(CASE WHEN ${SQL_CONFIRMED} THEN 1 ELSE 0 END), 0) AS confirmed,
+         COALESCE(SUM(CASE WHEN ${SQL_OUTDATED} THEN 1 ELSE 0 END), 0) AS outdated,
+         COALESCE(SUM(CASE WHEN ${SQL_ISSUES} THEN 1 ELSE 0 END), 0) AS issues,
+         COALESCE(SUM(CASE WHEN t.flagged = 1 THEN 1 ELSE 0 END), 0) AS flagged
+       FROM strings s
+       LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $2
+       WHERE s.game_id = $1`,
       [currentProject.game_id, currentProject.target_language]
-    )) as { total: number; confirmed: number; ai_draft: number; outdated: number; issues: number; flagged: number }[];
+    )) as {
+      total: number;
+      untranslated: number;
+      drafts: number;
+      confirmed: number;
+      outdated: number;
+      issues: number;
+      flagged: number;
+    }[];
 
-    const r = result[0];
-    setStatusCounts({
-      total: r.total,
-      confirmed: r.confirmed,
-      aiDraft: r.ai_draft,
-      untranslated: r.total - r.confirmed - r.ai_draft,
-      outdated: r.outdated,
-      issues: r.issues,
-      flagged: r.flagged,
-    });
+    setStatusCounts(result[0]);
     await loadCategories();
   }
 

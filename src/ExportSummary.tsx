@@ -90,7 +90,8 @@ export default function ExportSummary({
 
             {preflight.flagged > 0 && (
               <p style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
-                {preflight.flagged.toLocaleString()} flagged string(s) will be excluded.
+                ⚑ {preflight.flagged.toLocaleString()} confirmed string(s) are flagged, so they will be left out
+                of the export. Clear the flag to include them.
               </p>
             )}
 

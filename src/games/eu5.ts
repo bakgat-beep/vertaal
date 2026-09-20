@@ -84,7 +84,7 @@ export const eu5Adapter: GameAdapter = {
     id: modName.toLowerCase().replace(/\s+/g, "-"),
     version: "0.1.0",
     game_id: "eu5",
-    supported_game_version: "1.3.*",
+    supported_game_version: "1.*",
     short_description: `${targetLanguage} translation of Europa Universalis V.`,
     tags: ["Translation"],
     relationships: [],

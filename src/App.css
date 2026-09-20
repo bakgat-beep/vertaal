@@ -862,3 +862,102 @@ textarea::placeholder {
   padding: 0.3rem 0.55rem;
   font-size: 0.8rem;
 }
+
+/* --- Sidebar: which list is currently showing --- */
+.sidebar-item-active {
+  background: var(--bg-selected);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.sidebar-item-active:hover {
+  background: var(--bg-selected);
+}
+
+/* --- Previous / Next controls above and below the string list --- */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.pager-range {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.pager button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* --- Bring back the details panel after collapsing it --- */
+.context-panel-reopen {
+  writing-mode: vertical-rl;
+  flex-shrink: 0;
+  border: none;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-panel);
+  color: var(--text-dim);
+  padding: 0.9rem 0.35rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.context-panel-reopen:hover {
+  color: var(--text-main);
+}
+
+/* --- "What changed" view for strings whose source text was patched --- */
+.source-diff {
+  margin: 0.5rem 0 0.75rem;
+  font-size: 0.85rem;
+}
+.source-diff-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  margin-top: 0.4rem;
+}
+.source-diff-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-panel);
+}
+.source-diff-note {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin: 0.4rem 0;
+}
+.diff-removed {
+  background: rgba(224, 82, 82, 0.3);
+  text-decoration: line-through;
+}
+.diff-added {
+  background: rgba(76, 175, 110, 0.3);
+}
+
+/* --- Empty list messages (e.g. before any game files are imported) --- */
+.empty-state {
+  max-width: 520px;
+  margin: 3rem auto;
+  text-align: center;
+  color: var(--text-dim);
+}
+.empty-state h3 {
+  color: var(--text-main);
+  margin-bottom: 0.5rem;
+}
+.empty-state-hint {
+  font-size: 0.8rem;
+  margin-top: 1rem;
+}
+.more-menu-caption {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 0.25rem;
+}

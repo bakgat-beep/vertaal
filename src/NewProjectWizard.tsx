@@ -5,7 +5,7 @@ import type { Project } from "./types";
 import { GAME_ADAPTERS } from "./games";
 import { validateInstallPath } from "./import";
 import { detectInstalledModels, type OllamaModel } from "./ollama";
-import { TRANSLATION_PROVIDERS } from "./providers";
+import { TRANSLATION_PROVIDERS, providerOptionLabel } from "./providers";
 import { getProviderCredentials, setProviderCredentials } from "./providers/credentials";
 import { readModDescriptor, slugifyModName } from "./modDescriptor";
 import { detectSteamGameFolder } from "./steamDetect";
@@ -231,7 +231,7 @@ export default function NewProjectWizard({ recentProjects, onProjectSelected }: 
         finalModName,
         installPath,
         finalModel,
-        providerId || null,
+        providerId || "none", // "none" = manual translation only (see NO_AI_PROVIDER_ID in providers/index.ts)
         projectType,
         selectedGameId,
         isMod ? sourceModName.trim() : null,
@@ -400,7 +400,7 @@ export default function NewProjectWizard({ recentProjects, onProjectSelected }: 
         <select value={providerId} onChange={(e) => setProviderId(e.target.value)} style={{ flexGrow: 1 }}>
           {Object.values(TRANSLATION_PROVIDERS).map((p) => (
             <option key={p.id} value={p.id}>
-              {p.displayName} {p.isLocal ? "(local)" : "(cloud)"}
+              {providerOptionLabel(p)}
             </option>
           ))}
           <option value="">None — manual translation only</option>

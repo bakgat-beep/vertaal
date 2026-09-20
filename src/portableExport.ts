@@ -2,6 +2,7 @@ import { writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { getDb } from "./db";
 import type { Project } from "./types";
+import { portableExportFileName } from "./fileNames";
 
 interface PortableTranslation {
   key: string;
@@ -10,23 +11,27 @@ interface PortableTranslation {
   status: string;
   translated_by: string | null;
   updated_at: string | null;
-  // The hash of the source text as of when this translation was made
-  // (translations.source_hash_at_translation), not the current live hash.
-  // Lets a collaborator — including a future mobile app — detect that a
-  // translation was made against an older version of the source string,
-  // by comparing this against their own local strings.source_text_hash,
-  // the same way outdated-detection already works within a single install.
-  source_text_hash: string | null;
+  // The COMPLETE source text this translation was made against — written only
+  // when it differs from source_text above (i.e. the source has changed since),
+  // otherwise null, meaning "translated against source_text as shown". Lets a
+  // collaborator — including a future mobile app — detect exactly what changed
+  // by comparing real text, with nothing that can be missed. (Format 1 files
+  // carried a short fingerprint instead; the importer still understands them.)
+  source_text_at_translation: string | null;
 }
 
 interface PortableGlossaryTerm {
   english_term: string;
   translated_term: string;
   scope: "shared" | "game-specific";
+  // Added later: absent in exports from older versions (which is fine —
+  // the importer simply leaves those fields alone).
+  notes?: string | null;
+  status?: "preferred" | "review";
 }
 
 interface PortableProjectExport {
-  format_version: 1;
+  format_version: 2;
   game_id: string;
   target_language: string;
   exported_at: string;
@@ -40,7 +45,8 @@ export async function exportPortableProjectData(project: Project, destPath?: str
   const translations = (await db.select(
     `SELECT s.key as key, s.source_text as source_text, t.translated_text as translated_text,
             t.status as status, t.translated_by as translated_by, t.updated_at as updated_at,
-            t.source_hash_at_translation as source_text_hash
+            CASE WHEN t.source_text_at_translation IS NOT NULL AND t.source_text_at_translation != s.source_text
+                 THEN t.source_text_at_translation ELSE NULL END as source_text_at_translation
      FROM strings s
      JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
      WHERE s.game_id = $1 AND t.target_language = $2
@@ -49,21 +55,29 @@ export async function exportPortableProjectData(project: Project, destPath?: str
   )) as PortableTranslation[];
 
   const glossaryRows = (await db.select(
-    `SELECT english_term, translated_term, game_id
+    `SELECT english_term, translated_term, game_id, notes, status
      FROM glossary
      WHERE target_language = $1 AND (game_id = $2 OR game_id IS NULL)
      ORDER BY english_term`,
     [project.target_language, project.game_id]
-  )) as { english_term: string; translated_term: string; game_id: string | null }[];
+  )) as {
+    english_term: string;
+    translated_term: string;
+    game_id: string | null;
+    notes: string | null;
+    status: "preferred" | "review";
+  }[];
 
   const glossary: PortableGlossaryTerm[] = glossaryRows.map((g) => ({
     english_term: g.english_term,
     translated_term: g.translated_term,
     scope: g.game_id === null ? "shared" : "game-specific",
+    notes: g.notes,
+    status: g.status,
   }));
 
   const payload: PortableProjectExport = {
-    format_version: 1,
+    format_version: 2,
     game_id: project.game_id,
     target_language: project.target_language,
     exported_at: new Date().toISOString(),
@@ -76,7 +90,7 @@ export async function exportPortableProjectData(project: Project, destPath?: str
     const dataDir = await appDataDir();
     const exportsDir = await join(dataDir, "exports");
     await mkdir(exportsDir, { recursive: true });
-    finalPath = await join(exportsDir, `${project.game_id}-${project.target_language}-vertaal-export.json`);
+    finalPath = await join(exportsDir, portableExportFileName(project));
   }
 
   await writeTextFile(finalPath, JSON.stringify(payload, null, 2));

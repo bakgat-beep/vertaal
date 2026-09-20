@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import type { Project } from "./types";
-import { TRANSLATION_PROVIDERS } from "./providers";
+import { TRANSLATION_PROVIDERS, NO_AI_PROVIDER_ID, providerOptionLabel } from "./providers";
 import { getProviderCredentials, setProviderCredentials } from "./providers/credentials";
 import { getDb } from "./db";
 import { GAME_ADAPTERS } from "./games";
@@ -30,6 +30,12 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
   }, [providerId]);
 
   async function loadCredentials(id: string) {
+    if (id === NO_AI_PROVIDER_ID) {
+      setHasApiKey(false);
+      setBaseUrl("");
+      setApiKeyInput("");
+      return;
+    }
     const creds = await getProviderCredentials(id);
     setHasApiKey(!!creds.apiKey);
     setBaseUrl(creds.baseUrl ?? "");
@@ -37,6 +43,9 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
   }
 
   const provider = TRANSLATION_PROVIDERS[providerId];
+  // "None": translate by hand only. No AI settings apply, and the AI buttons
+  // are hidden throughout the project.
+  const isManual = providerId === NO_AI_PROVIDER_ID;
 
   async function handleSave() {
     const parsedRetryDelay = parseInt(retryDelayMs, 10);
@@ -66,7 +75,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
         [modName, providerId, model || null, parsedRetryDelay, parsedGoogleDelay, trimmedSourceOverride, trimmedTargetOverride, hiddenFromRecent, project.id]
       );
 
-      if (apiKeyInput.trim() || baseUrl.trim()) {
+      if (!isManual && (apiKeyInput.trim() || baseUrl.trim())) {
         await setProviderCredentials(providerId, apiKeyInput.trim() || null, baseUrl.trim() || null);
         if (apiKeyInput.trim()) {
           setHasApiKey(true);
@@ -103,9 +112,12 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
         </div>
 
         <div className="form-row">
-          <div className="form-label">Mod name</div>
+          <div className="form-label">Exported mod name</div>
           <input value={modName} onChange={(e) => setModName(e.target.value)} style={{ flexGrow: 1 }} />
         </div>
+        <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
+          The name of the translation mod that Build Mod creates (what players will see in the game's launcher).
+        </p>
 
         <div className="form-row">
           <div className="form-label">Recent Projects</div>
@@ -126,12 +138,20 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           <select value={providerId} onChange={(e) => setProviderId(e.target.value)} style={{ flexGrow: 1 }}>
             {Object.values(TRANSLATION_PROVIDERS).map((p) => (
               <option key={p.id} value={p.id}>
-                {p.displayName} {p.isLocal ? "(local)" : "(cloud)"}
+                {providerOptionLabel(p)}
               </option>
             ))}
+            <option value={NO_AI_PROVIDER_ID}>None — manual translation only</option>
           </select>
         </div>
+        {isManual && (
+          <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
+            No AI is used in this project: the AI buttons and batch-translation actions are hidden, and you translate
+            every string yourself. You can switch to a provider here at any time.
+          </p>
+        )}
 
+        {!isManual && (
         <div className="form-row">
           <div className="form-label">Model</div>
           <input
@@ -147,8 +167,9 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
             style={{ flexGrow: 1 }}
           />
         </div>
+        )}
 
-        {provider && !provider.isLocal && (
+        {!isManual && provider && !provider.isLocal && (
           <>
             <div className="form-row">
               <div className="form-label">API key</div>
@@ -172,15 +193,21 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
                 style={{ flexGrow: 1 }}
               />
             </div>
+            <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
+              The API key and Base URL are saved once per provider and shared by every project that uses it —
+              changing them here changes them for all of those projects.
+            </p>
           </>
         )}
 
-        {provider && !provider.supportsGlossary && (
+        {!isManual && provider && !provider.supportsGlossary && (
           <p style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
             Note: {provider.displayName} does not apply your glossary rules automatically.
           </p>
         )}
 
+        {!isManual && (
+          <>
         <div className="form-row">
           <div className="form-label">Retry delay (ms)</div>
           <input
@@ -194,19 +221,27 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           How long to wait between retry attempts on a string that failed to translate, during batch runs.
         </p>
 
-        <div className="form-row">
-          <div className="form-label">Google Translate delay (ms)</div>
-          <input
-            value={googleDelayMs}
-            onChange={(e) => setGoogleDelayMs(e.target.value)}
-            placeholder="500"
-            style={{ flexGrow: 1 }}
-          />
-        </div>
-        <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
-          Pause before every request sent to the Google Translate workaround. Only applies when Google Translate is the selected provider.
-        </p>
+        {providerId === "google-translate" && (
+          <>
+            <div className="form-row">
+              <div className="form-label">Google Translate delay (ms)</div>
+              <input
+                value={googleDelayMs}
+                onChange={(e) => setGoogleDelayMs(e.target.value)}
+                placeholder="500"
+                style={{ flexGrow: 1 }}
+              />
+            </div>
+            <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
+              Pause before every request sent to the Google Translate workaround, so it isn't hit too quickly.
+            </p>
+          </>
+        )}
+          </>
+        )}
 
+        {!isManual && (
+          <>
         <h3 style={{ marginBottom: 0, marginTop: "1rem" }}>Advanced</h3>
         <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
           Only needed if your provider doesn't recognize "{project.target_language}" (or "{project.source_language}")
@@ -234,6 +269,8 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
             style={{ flexGrow: 1 }}
           />
         </div>
+          </>
+        )}
 
         {output && <p style={{ fontSize: "0.85rem" }}>{output}</p>}
 

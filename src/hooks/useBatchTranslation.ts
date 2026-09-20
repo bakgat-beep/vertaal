@@ -4,7 +4,7 @@ import type { ViewMode } from "../App";
 import { getDb } from "../db";
 import { translateWithRetry } from "../translate";
 import { loadGlossaryTerms } from "../glossary";
-import { protectTokens } from "../parser";
+import { isCodeOnly, isBlank, needsNoTranslation, shouldConfirmAsIs } from "../codeOnly";
 import { backupDatabase } from "../backup";
 
 interface UseBatchTranslationParams {
@@ -46,7 +46,10 @@ export function useBatchTranslation({
   async function batchTranslatePage() {
     if (!currentProject) return;
     const targets = rows.filter(
-      (r) => (!r.status || r.status === "untranslated" || r.status === "ai-suggested") && !r.flagged
+      (r) =>
+        (!r.status || r.status === "untranslated" || r.status === "ai-suggested") &&
+        !r.flagged &&
+        !needsNoTranslation(r.source_text) // nothing to translate — "Confirm code-only / blank strings" handle those
     );
     if (targets.length === 0) {
       setStatus("No untranslated or AI-suggested strings on this page.");
@@ -92,47 +95,84 @@ export function useBatchTranslation({
     );
   }
 
-  async function batchAutoAcceptProtectedOnly() {
+  // Confirms, exactly as they are, every string that needs no translation:
+  // the original text becomes the confirmed translation. Covers untranslated
+  // strings, plus strings an earlier version of this action left as drafts
+  // that are just a copy of the source. Never touches flagged strings, or a
+  // draft with text you typed yourself.
+  async function confirmSourceAsIs(
+    kind: "code-only" | "blank",
+    qualifies: (sourceText: string) => boolean,
+    label: string,
+    describe: string
+  ) {
     if (!currentProject) return;
     const db = await getDb();
     const gameId = currentProject.game_id;
     const lang = currentProject.target_language;
 
     const candidates = (await db.select(
-      `SELECT s.key as key, s.source_text as source_text, s.source_text_hash as source_text_hash
+      `SELECT s.key as key, s.source_text as source_text, t.status as status,
+              t.translated_text as translated_text, t.translated_by as translated_by
        FROM strings s
        LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
-       WHERE s.game_id = $2 AND (t.status IS NULL OR t.status = 'untranslated') AND (t.flagged IS NULL OR t.flagged = 0)`,
+       WHERE s.game_id = $2
+         AND (t.flagged IS NULL OR t.flagged = 0)
+         AND (t.status IS NULL OR t.status IN ('untranslated', 'ai-suggested'))`,
       [lang, gameId]
-    )) as { key: string; source_text: string; source_text_hash: string }[];
+    )) as {
+      key: string;
+      source_text: string;
+      status: string | null;
+      translated_text: string | null;
+      translated_by: string | null;
+    }[];
 
-    const matches = candidates.filter((c) => {
-      const { text } = protectTokens(c.source_text);
-      return text.replace(/__TOKEN_\d+__/g, "").trim() === "";
-    });
+    const matches = candidates.filter((c) => shouldConfirmAsIs(c, qualifies));
 
     if (matches.length === 0) {
-      setStatus("No fully-protected (code-only) strings found among untranslated strings.");
+      setStatus(`No ${label} found that still need confirming.`);
       return;
     }
 
     const proceed = window.confirm(
-      `Found ${matches.length} untranslated string(s) made up entirely of functions/icons/variables, with no actual translatable text. Mark them all as AI draft using the source text as-is?`
+      `Found ${matches.length} string(s) ${describe}. Confirm them all exactly as they are (the original text becomes the confirmed translation)?`
     );
     if (!proceed) return;
 
-    setStatus(`Marking ${matches.length} code-only strings as AI draft...`);
+    setStatus(`Confirming ${matches.length} strings...`);
     for (const m of matches) {
       await db.execute(
-        `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
-         VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
-        [m.key, gameId, lang, m.source_text, "auto (code-only)", m.key, gameId, lang, m.source_text_hash]
+        `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_text_at_translation)
+         VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), $6)
+         ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET
+           translated_text = excluded.translated_text,
+           status = 'human-confirmed',
+           translated_by = excluded.translated_by,
+           updated_at = excluded.updated_at,
+           source_text_at_translation = excluded.source_text_at_translation`,
+        [m.key, gameId, lang, m.source_text, `auto (${kind})`, m.source_text]
       );
     }
 
     refreshCounts();
     await reloadCurrentPage();
-    setStatus(`Marked ${matches.length} code-only strings as AI draft.`);
+    setStatus(`Confirmed ${matches.length} strings as they are.`);
+  }
+
+  // Strings made only of game code (icons, variables, functions): nothing to translate.
+  function batchConfirmCodeOnly() {
+    return confirmSourceAsIs(
+      "code-only",
+      isCodeOnly,
+      "code-only strings",
+      "made up entirely of game code (icons, variables, functions) with no words to translate"
+    );
+  }
+
+  // Strings that are empty or only spaces / line breaks.
+  function batchConfirmBlank() {
+    return confirmSourceAsIs("blank", isBlank, "blank strings", "that are empty or contain only spaces or line breaks");
   }
 
   async function batchTranslateOvernight() {
@@ -213,13 +253,16 @@ export function useBatchTranslation({
     stopRequestedRef.current = false;
 
     const db = await getDb();
-    const targets = (await db.select(
+    const allAiDrafts = (await db.select(
       `SELECT s.key as key, s.game_id as game_id, s.source_text as source_text
        FROM strings s
        JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
        WHERE t.status = 'ai-suggested' AND s.game_id = $2`,
       [currentProject.target_language, currentProject.game_id]
     )) as { key: string; game_id: string; source_text: string }[];
+    // Code-only and blank strings have nothing for an AI to translate, so
+    // they're left out of a re-run.
+    const targets = allAiDrafts.filter((r) => !needsNoTranslation(r.source_text));
 
     setBatchProgress({ done: 0, total: targets.length });
     let done = 0;
@@ -269,7 +312,8 @@ export function useBatchTranslation({
     overnightCount,
     setOvernightCount,
     batchTranslatePage,
-    batchAutoAcceptProtectedOnly,
+    batchConfirmCodeOnly,
+    batchConfirmBlank,
     batchTranslateOvernight,
     batchRerunAIUnconfirmed,
     stopBatch,

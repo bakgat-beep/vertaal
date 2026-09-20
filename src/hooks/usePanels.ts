@@ -10,6 +10,7 @@ export interface PanelState {
   collaboration: boolean;
   projectSettings: boolean;
   exportSummary: boolean;
+  confirmNames: boolean;
 }
 
 const initialPanelState: PanelState = {
@@ -18,6 +19,7 @@ const initialPanelState: PanelState = {
   collaboration: false,
   projectSettings: false,
   exportSummary: false,
+  confirmNames: false,
 };
 
 export function usePanels() {

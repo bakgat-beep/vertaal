@@ -10,7 +10,11 @@ export interface EditorRow {
   translated_by: string | null;
   updated_at: string | null;
   file_path?: string | null;
-  source_hash_at_translation: string | null;
+  category?: string | null;
+  subcategory?: string | null;
+  // The complete source text this translation was made against; compared with
+  // source_text to detect that the game's text changed (see sourceChange.ts).
+  source_text_at_translation: string | null;
 }
 export interface Project {
   id: number;
