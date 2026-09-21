@@ -78,7 +78,10 @@ export function useBatchTranslation({
         row.game_id,
         row.source_text,
         () => stopRequestedRef.current,
-        glossaryTerms
+        glossaryTerms,
+        undefined,
+        undefined,
+        true // batch context: the Google Translate delay is meant for batch runs
       );
       if (result.ok) succeeded++;
       else lastError = result.error ?? "unknown error";
@@ -226,7 +229,10 @@ export function useBatchTranslation({
         row.game_id,
         row.source_text,
         () => stopRequestedRef.current,
-        glossaryTerms
+        glossaryTerms,
+        undefined,
+        undefined,
+        true // batch context: the Google Translate delay is meant for batch runs
       );
 
       if (result.ok) {
@@ -280,7 +286,10 @@ export function useBatchTranslation({
         row.game_id,
         row.source_text,
         () => stopRequestedRef.current,
-        glossaryTerms
+        glossaryTerms,
+        undefined,
+        undefined,
+        true // batch context: the Google Translate delay is meant for batch runs
       );
       if (result.ok) {
         consecutiveFailures = 0;

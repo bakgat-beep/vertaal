@@ -44,7 +44,13 @@ export async function translateAndSave(
   // useBatchTranslation.ts), it loads the glossary once up front and passes
   // it here — otherwise translateAndSave fetches it fresh itself, which is
   // what the single-row "Translate" button in the editor still does.
-  preloadedGlossaryTerms?: GlossaryTerm[]
+  preloadedGlossaryTerms?: GlossaryTerm[],
+  // The Google Translate delay exists to stay restrained with request
+  // volume against the free unofficial endpoint during a batch run — it
+  // should NOT slow down a single manual click of the per-row "AI" button.
+  // Defaults to false so single-string translation stays instant; only the
+  // batch functions in useBatchTranslation.ts opt in.
+  applyGoogleTranslateDelay: boolean = false
 ): Promise<{ ok: boolean; error?: string }> {
   if (!currentProject) return { ok: false, error: "No project loaded." };
   const provider = getProjectProvider(currentProject);
@@ -69,7 +75,7 @@ export async function translateAndSave(
 
     const credentials = await getProviderCredentials(provider.id);
 
-    if (provider.id === "google-translate") {
+    if (provider.id === "google-translate" && applyGoogleTranslateDelay) {
       await sleep(currentProject.google_translate_delay_ms ?? 500);
     }
 
@@ -152,7 +158,11 @@ export async function translateWithRetry(
   shouldStop: () => boolean,
   preloadedGlossaryTerms?: GlossaryTerm[],
   maxAttempts: number = 3,
-  retryDelayMs?: number
+  retryDelayMs?: number,
+  // Passed straight through to translateAndSave — true for every batch
+  // caller in useBatchTranslation.ts, since that's the only case the
+  // Google Translate delay is meant to apply to.
+  applyGoogleTranslateDelay: boolean = false
 ): Promise<{ ok: boolean; error?: string; attempts: number }> {
   const delay = retryDelayMs ?? currentProject?.retry_delay_ms ?? 2000;
   let lastResult: { ok: boolean; error?: string } = { ok: false, error: "No attempts made." };
@@ -161,7 +171,7 @@ export async function translateWithRetry(
     if (shouldStop()) {
       return { ok: false, error: "Stopped by user.", attempts: attempt - 1 };
     }
-    lastResult = await translateAndSave(currentProject, key, gameId, sourceText, preloadedGlossaryTerms);
+    lastResult = await translateAndSave(currentProject, key, gameId, sourceText, preloadedGlossaryTerms, applyGoogleTranslateDelay);
     if (lastResult.ok) {
       return { ok: true, attempts: attempt };
     }

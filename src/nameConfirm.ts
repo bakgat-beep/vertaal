@@ -48,6 +48,15 @@ export function splitKeyPatterns(raw: string): string[] {
     .filter((p) => p.length > 0);
 }
 
+// In a database LIKE search, "_" means "any one character" and "%" means "any
+// run of characters" — so a pattern such as "character_name_" would also match
+// "characterXnameY". Keys are full of underscores, so each of these characters
+// is "escaped" to be taken literally, as the person typed it. The matching
+// clause below declares "\" as the escape character.
+export function escapeLikePattern(pattern: string): string {
+  return pattern.replace(/[\\%_]/g, "\\$&");
+}
+
 // Builds the "(key matches...) OR (file matches...)" clause shared by the
 // preview count and the actual confirm below, appending its placeholders
 // to params as it goes. Both callers build their own params array starting
@@ -64,8 +73,8 @@ function buildMatchClause(
 
   if (keyPatterns.length > 0) {
     const keyClauses = keyPatterns.map((p) => {
-      params.push(`%${p}%`);
-      return `s.key LIKE $${params.length}`;
+      params.push(`%${escapeLikePattern(p)}%`);
+      return `s.key LIKE $${params.length} ESCAPE '\\'`;
     });
     matchClauses.push(`(${keyClauses.join(" OR ")})`);
   }
@@ -125,18 +134,27 @@ export async function confirmNameMatches(
 
   const db = await getDb();
   const matches = (await db.select(
-    `SELECT s.key as key, s.source_text as source_text, s.source_text_hash as source_text_hash
+    `SELECT s.key as key, s.source_text as source_text
      FROM strings s
      ${UNTOUCHED_UNFLAGGED_JOIN}
        AND (${clause})`,
     params
-  )) as { key: string; source_text: string; source_text_hash: string }[];
+  )) as { key: string; source_text: string }[];
 
   for (const m of matches) {
+    // An upsert, so nothing else on the row (its flag) is disturbed. The
+    // source text is also recorded as the text this was confirmed against,
+    // so a later change to it shows up as "Patch Changed".
     await db.execute(
-      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_hash_at_translation)
-       VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
-      [m.key, gameId, targetLanguage, m.source_text, translatedBy, m.key, gameId, targetLanguage, m.source_text_hash]
+      `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_text_at_translation)
+       VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), $6)
+       ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET
+         translated_text = excluded.translated_text,
+         status = 'human-confirmed',
+         translated_by = excluded.translated_by,
+         updated_at = excluded.updated_at,
+         source_text_at_translation = excluded.source_text_at_translation`,
+      [m.key, gameId, targetLanguage, m.source_text, translatedBy, m.source_text]
     );
   }
 

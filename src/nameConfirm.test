@@ -1,0 +1,55 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Records the SQL and values the functions send to the database.
+const calls: { sql: string; params: unknown[] }[] = [];
+vi.mock("./db", () => ({
+  getDb: async () => ({
+    select: async (sql: string, params: unknown[]) => {
+      calls.push({ sql, params });
+      return [{ count: 0 }];
+    },
+    execute: async () => undefined,
+  }),
+}));
+
+import { splitKeyPatterns, escapeLikePattern, countNameConfirmMatches } from "./nameConfirm";
+
+describe("splitKeyPatterns", () => {
+  it("splits on commas, trims, and drops empties", () => {
+    expect(splitKeyPatterns("character_name_, location_name_ ,, ")).toEqual(["character_name_", "location_name_"]);
+    expect(splitKeyPatterns("")).toEqual([]);
+    expect(splitKeyPatterns("  ,  ")).toEqual([]);
+  });
+});
+
+describe("escapeLikePattern", () => {
+  it("makes underscores, percent signs and backslashes literal", () => {
+    expect(escapeLikePattern("character_name_")).toBe("character\\_name\\_");
+    expect(escapeLikePattern("100%")).toBe("100\\%");
+    expect(escapeLikePattern("a\\b")).toBe("a\\\\b");
+    expect(escapeLikePattern("plain")).toBe("plain");
+  });
+});
+
+describe("countNameConfirmMatches", () => {
+  beforeEach(() => {
+    calls.length = 0;
+  });
+
+  it("sends escaped patterns and declares the escape character", async () => {
+    await countNameConfirmMatches("eu5", "afrikaans", ["character_name_"], []);
+    expect(calls[0].sql).toContain("s.key LIKE $3 ESCAPE '\\'");
+    expect(calls[0].params).toEqual(["eu5", "afrikaans", "%character\\_name\\_%"]);
+  });
+
+  it("never matches everything when nothing is selected", async () => {
+    expect(await countNameConfirmMatches("eu5", "afrikaans", [], [])).toBe(0);
+    expect(calls).toHaveLength(0); // no query is even sent
+  });
+
+  it("combines key patterns and files with OR", async () => {
+    await countNameConfirmMatches("eu5", "afrikaans", ["a_"], ["C:\\loc\\x.yml"]);
+    expect(calls[0].sql).toContain(") OR (s.file_path = $4)");
+    expect(calls[0].params).toEqual(["eu5", "afrikaans", "%a\\_%", "C:\\loc\\x.yml"]);
+  });
+});

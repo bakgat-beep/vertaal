@@ -18,6 +18,7 @@ import { backupDatabase } from "./backup";
 import { exportPortableProjectData } from "./portableExport";
 import { importPortableProjectData } from "./mergeImport";
 import GlossaryManager from "./GlossaryManager";
+import ConfirmNamesPanel from "./ConfirmNamesPanel";
 import SourceDiff from "./SourceDiff";
 import { isSourceChanged } from "./sourceChange";
 import { loadHistory, type HistoryEntry } from "./history";
@@ -658,6 +659,13 @@ function App() {
               >
                 Confirm empty &amp; blank strings
               </button>
+              <button
+                onClick={() => { openPanel("confirmNames"); setMoreMenuOpen(false); }}
+                disabled={batchRunning}
+                title="Pick strings by part of their key or by source file — for example character or location names that the game localises itself — and confirm them exactly as they are."
+              >
+                Confirm names/locations as-is…
+              </button>
 
               <div className="more-menu-section-label">Game files</div>
               <button
@@ -1125,6 +1133,18 @@ function App() {
             closePanel("glossary");
             searchFor(term);
           }}
+        />
+      )}
+      {panels.confirmNames && currentProject && (
+        <ConfirmNamesPanel
+          gameId={currentProject.game_id}
+          targetLanguage={currentProject.target_language}
+          translatedBy={contributorName}
+          onConfirmed={async () => {
+            await refreshCounts();
+            await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+          }}
+          onClose={() => closePanel("confirmNames")}
         />
       )}
       {panels.collaboration && currentProject && (
