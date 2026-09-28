@@ -5,6 +5,11 @@
 // actual TranslationProvider that sends translation requests to Ollama.
 // That file reuses detectInstalledModels() below for its own model listing,
 // so the "ask Ollama what's installed" logic only lives in one place.
+//
+// Requests go through Tauri's HTTP plugin, not the page's own fetch — see
+// src/providers/deepl.ts for why.
+import { fetch } from "@tauri-apps/plugin-http";
+
 export interface OllamaModel {
   name: string;
   sizeGb: number;

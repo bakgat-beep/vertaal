@@ -3,9 +3,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { join } from "@tauri-apps/api/path";
 import type { Project } from "./types";
 import { checkGitAvailable, initRepo, cloneRepo, setRemote, commitAll, push, pull } from "./git";
-import { getGithubToken, setGithubToken } from "./settings";
+import { getContributorName, getGithubToken, setGithubToken } from "./settings";
 import { exportPortableProjectData } from "./portableExport";
-import { importPortableProjectData } from "./mergeImport";
+import { importAllContributorFiles, type CombinedMergeSummary } from "./mergeImport";
 import { getDb } from "./db";
 import { portableExportFileName } from "./fileNames";
 
@@ -25,14 +25,29 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
   const [gitAvailable, setGitAvailable] = useState<string | null | "checking">("checking");
+  const [contributorName, setContributorNameState] = useState<string | null>(null);
 
   useEffect(() => {
     getGithubToken().then((t) => setHasToken(!!t));
     checkGitAvailable().then(setGitAvailable);
+    getContributorName().then(setContributorNameState);
   }, []);
 
+  // Each contributor's file is named after them, so two people syncing to the
+  // same folder never write the same file — that's what lets Git merge their
+  // changes automatically instead of conflicting. See fileNames.ts.
   function exportFileName() {
-    return portableExportFileName(project);
+    return portableExportFileName(project, contributorName);
+  }
+
+  function summaryLine(summary: CombinedMergeSummary): string {
+    if (summary.filesProcessed.length === 0) return "No collaborator files found to merge yet.";
+    return (
+      `Merged ${summary.filesProcessed.length} file(s) (${summary.filesProcessed.join(", ")}): ` +
+      `${summary.applied} translation(s) applied, ${summary.skippedLocalNewer} skipped (your local version was newer), ` +
+      `${summary.skippedNoLocalString} skipped (string not found locally), ` +
+      `${summary.glossaryAdded} glossary term(s) added, ${summary.glossaryUpdated} updated.`
+    );
   }
 
   async function saveProjectField(field: "git_repo_path" | "git_remote_url", value: string) {
@@ -93,46 +108,70 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
     }
   }
 
+  // Uploads your work AND brings in your collaborators' — in that order:
+  // export your own file, commit it, pull (merging in anyone else's file —
+  // see git.ts for why this almost never conflicts), THEN push. Pulling
+  // before pushing means a push that would otherwise be rejected because
+  // someone else pushed first now succeeds automatically, instead of you
+  // having to notice the failure and separately run Pull yourself.
   async function handleSync() {
     if (!repoPath) return;
     setBusy(true);
-    setOutput("Exporting current translations...");
+    setOutput("Exporting your translations...");
     try {
       const filePath = await join(repoPath, exportFileName());
       await exportPortableProjectData(project, filePath);
 
-      setOutput("Committing changes...");
-      const commitResult = await commitAll(repoPath, `Update ${project.target_language} translations`);
+      setOutput("Committing your changes...");
+      const commitResult = await commitAll(repoPath, `Update ${project.target_language} translations`, contributorName);
 
-      setOutput("Pushing to remote...");
+      setOutput("Checking for collaborators' changes first...");
       const token = await getGithubToken();
-      const pushResult = await push(repoPath, token, remoteUrl);
+      const pullResult = await pull(repoPath, token, remoteUrl, contributorName);
+      if (!pullResult.ok) {
+        setOutput(`Sync stopped before pushing — could not merge in collaborators' changes:\n\n${pullResult.output}`);
+        setBusy(false);
+        return;
+      }
 
-      setOutput(`Commit: ${commitResult.output}\n\nPush: ${pushResult.output}`);
+      setOutput("Pushing to the shared repository...");
+      const pushResult = await push(repoPath, token, remoteUrl);
+      if (!pushResult.ok) {
+        setOutput(`Commit: ${commitResult.output}\n\nPull: ${pullResult.output}\n\nPush failed: ${pushResult.output}`);
+        setBusy(false);
+        return;
+      }
+
+      setOutput("Merging in any collaborators' changes...");
+      const mergeSummary = await importAllContributorFiles(project, repoPath);
+      setOutput(`Push: ${pushResult.output}\n\n${summaryLine(mergeSummary)}`);
+      if (mergeSummary.applied > 0 || mergeSummary.glossaryAdded > 0 || mergeSummary.glossaryUpdated > 0) {
+        onDataChanged();
+      }
     } catch (err) {
       setOutput(`Sync failed: ${err}`);
     }
     setBusy(false);
   }
 
+  // A lighter one-way check: brings in collaborators' work without pushing
+  // your own — for when you just want to see what's new.
   async function handlePull() {
     if (!repoPath) return;
     setBusy(true);
     setOutput("Pulling latest changes...");
     try {
       const token = await getGithubToken();
-      const pullResult = await pull(repoPath, token, remoteUrl);
-      setOutput(`Pull: ${pullResult.output}`);
+      const pullResult = await pull(repoPath, token, remoteUrl, contributorName);
+      if (!pullResult.ok) {
+        setOutput(`Pull: ${pullResult.output}`);
+        setBusy(false);
+        return;
+      }
 
-      if (pullResult.ok) {
-        const filePath = await join(repoPath, exportFileName());
-        const summary = await importPortableProjectData(project, filePath);
-        setOutput(
-          `Pull: ${pullResult.output}\n\nMerge complete: ${summary.applied} translation(s) applied, ` +
-            `${summary.skippedLocalNewer} skipped (your local version was newer), ` +
-            `${summary.skippedNoLocalString} skipped (string not found locally), ` +
-            `${summary.glossaryAdded} glossary term(s) added, ${summary.glossaryUpdated} updated.`
-        );
+      const mergeSummary = await importAllContributorFiles(project, repoPath);
+      setOutput(`Pull: ${pullResult.output}\n\n${summaryLine(mergeSummary)}`);
+      if (mergeSummary.applied > 0 || mergeSummary.glossaryAdded > 0 || mergeSummary.glossaryUpdated > 0) {
         onDataChanged();
       }
     } catch (err) {
@@ -150,10 +189,11 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
             Sync this project's translations with a Git repository so others can contribute.
           </p>
           <p style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
-            <strong>Sync</strong> saves your translations into the folder below and uploads them to the shared
-            repository. <strong>Pull + Merge</strong> downloads what your collaborators uploaded and merges it into
-            this project — anything you edited more recently is kept. Set the folder and repository up once, then
-            just use those two buttons.
+            Each collaborator has their own file in the shared folder, so nobody's work overwrites anyone else's.
+            <strong> Sync</strong> saves your translations to your own file, uploads it, and brings in everyone
+            else's too. <strong>Pull + Merge</strong> only brings in everyone else's, without uploading yours yet.
+            Anything you edited more recently is always kept over an older incoming version. Set the folder and
+            repository up once, then just use those two buttons.
           </p>
         </div>
 
@@ -256,15 +296,15 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
                 className="build-mod-button"
                 onClick={handleSync}
                 disabled={busy}
-                title="Upload your work: saves your translations to the shared folder, records them in Git, and pushes them to GitHub"
+                title="Uploads your translations (to your own file, so it never collides with a collaborator's) and brings in everyone else's latest work too"
               >
-                Sync (Export + Commit + Push)
+                Sync (Export + Commit + Pull + Push)
               </button>
               <button
                 className="build-mod-button"
                 onClick={handlePull}
                 disabled={busy}
-                title="Download your collaborators' work from GitHub and merge it into this project. Strings you edited more recently are kept as they are."
+                title="Downloads every collaborator's work from GitHub and merges it into this project, without uploading anything of yours yet. Strings you edited more recently are kept as they are."
               >
                 Pull + Merge
               </button>

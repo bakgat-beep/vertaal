@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { documentDir, join } from "@tauri-apps/api/path";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getDb } from "./db";
 import type { Project } from "./types";
 import { GAME_ADAPTERS } from "./games";
@@ -44,6 +45,11 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState<"hub" | "new-project" | "import-project">("hub");
   const [maintenanceStatus, setMaintenanceStatus] = useState("");
+  // Set once a restore has been prepared: Vertaal must then be closed and
+  // reopened (the restore is put in place at the next start), so this screen
+  // replaces everything else until that happens.
+  const [restoreSafetyPath, setRestoreSafetyPath] = useState<string | null>(null);
+  const [closeNote, setCloseNote] = useState("");
   const [importStatus, setImportStatus] = useState("");
 
   useEffect(() => {
@@ -113,7 +119,9 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
     setMaintenanceStatus("Backing up...");
     try {
       await backupDatabase(chosenPath);
-      setMaintenanceStatus(`Backup saved: ${chosenPath}`);
+      setMaintenanceStatus(
+        `Backup saved: ${chosenPath} (Saved API keys and your GitHub token are left out of backups on purpose.)`
+      );
     } catch (err) {
       setMaintenanceStatus(`Backup failed: ${err}`);
     }
@@ -124,16 +132,16 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
     if (!filePath) return;
     const proceed = window.confirm(
       "This will REPLACE your entire Vertaal database (every project, every game) with the selected backup file. " +
-        "Your current database will automatically be saved first in case you need to undo this, but this action " +
-        "should not be taken lightly. Continue?"
+        "Your current database will automatically be saved first in case you need to undo this, and Vertaal will " +
+        "need to close and be reopened to finish. Saved API keys and your GitHub token are not part of a backup, so " +
+        "you will need to enter them again afterwards. Continue?"
     );
     if (!proceed) return;
     setMaintenanceStatus("Restoring...");
     try {
       const safetyBackupPath = await restoreDatabase(filePath as string);
-      setMaintenanceStatus(
-        `Restore complete. Your previous database was saved to: ${safetyBackupPath}. Please close and reopen Vertaal for the change to take effect.`
-      );
+      setMaintenanceStatus("");
+      setRestoreSafetyPath(safetyBackupPath);
     } catch (err) {
       setMaintenanceStatus(`Restore failed: ${err}`);
     }
@@ -163,6 +171,37 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
   }
 
   const hasProjects = recentProjects.length > 0;
+
+  async function closeVertaal() {
+    try {
+      await getCurrentWindow().close();
+    } catch {
+      setCloseNote("Vertaal could not close itself. Please close the window yourself, then open Vertaal again.");
+    }
+  }
+
+  if (restoreSafetyPath !== null) {
+    return (
+      <div className="welcome-overlay">
+        <div className="welcome-window">
+          <h2>Restore ready — Vertaal needs to close</h2>
+          <p style={{ color: "var(--text-dim)" }}>
+            Your backup has been checked and is ready. It is put in place the next time Vertaal starts, so please close
+            Vertaal now and then open it again. Nothing has been changed yet.
+          </p>
+          <p style={{ color: "var(--text-dim)" }}>
+            Your current data was saved first, in case you need to undo this:
+            <br />
+            <code>{restoreSafetyPath}</code>
+          </p>
+          <button className="build-mod-button" onClick={closeVertaal}>
+            Close Vertaal
+          </button>
+          {closeNote && <p className="maintenance-status">{closeNote}</p>}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="welcome-overlay">

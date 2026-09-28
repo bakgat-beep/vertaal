@@ -6,7 +6,11 @@ export interface ParsedString {
 export function parseLocFile(content: string): ParsedString[] {
   const results: ParsedString[] = [];
   const lines = content.split("\n");
-  const linePattern = /^\s*([A-Za-z0-9_.]+):\d*\s*"(.*?)"\s*(#.*)?$/;
+  // Keys are usually letters, numbers, underscores and dots, but a hyphen is
+  // also a legal character in a Paradox loc key and does appear in some
+  // mods/games — excluding it meant that whole line was silently skipped on
+  // import, with no warning that anything had been left out.
+  const linePattern = /^\s*([A-Za-z0-9_.-]+):\d*\s*"(.*?)"\s*(#.*)?$/;
   for (const line of lines) {
     const match = line.match(linePattern);
     if (match) results.push({ key: match[1], text: match[2] });
@@ -33,13 +37,33 @@ const tokenPattern =
 export function restoreTokens(translatedText: string, tokens: string[]): string {
   let result = translatedText;
   tokens.forEach((token, i) => {
-    result = result.replace(`__TOKEN_${i}__`, token);
+    // The replacement is given as a function, NOT as plain text: JavaScript
+    // treats a "$" inside replacement text as a special instruction ("$$"
+    // becomes "$", "$'" pastes in the text after the match, and so on), which
+    // silently corrupted game codes such as HOI4's "$$" or "[GetX('a$')]".
+    // A function's return value is always used exactly as it is.
+    result = result.replace(`__TOKEN_${i}__`, () => token);
   });
   return result;
 }
 
+// Prepares a translation to be written between the quotes of a loc file line.
+//
+// The text Vertaal stores is the game's own file text: line breaks are already
+// the two characters \n, and quotes inside the text may already be \" — they
+// were imported exactly as written. So only what is NOT already a valid
+// escape needs fixing:
+//   - a valid escape pair (\n  \t  \"  \\) is left exactly as it is;
+//   - a bare quote " becomes \";
+//   - a bare backslash (not part of a valid escape) becomes \\;
+//   - a real line break (someone pressing Enter in the text box) becomes \n,
+//     because a loc entry must stay on ONE line.
+// (Doubling every backslash, as an earlier version did, turned every \n line
+// break into \\n, which the game shows as the letters "\n".)
 export function escapeForLocExport(text: string): string {
-  return text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return text
+    .replace(/\\[nt"\\]|["\\]/g, (m) => (m.length === 2 ? m : "\\" + m))
+    .replace(/\r\n|\r|\n/g, "\\n");
 }
 
 export function validateTokensPreserved(translatedText: string, tokenCount: number): boolean {

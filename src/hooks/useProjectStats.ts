@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Project } from "../types";
 import { type CategoryCount } from "../App";
 import { getDb } from "../db";
@@ -20,38 +20,49 @@ export function useProjectStats(currentProject: Project | null) {
     flagged: 0,
   });
 
+  // Which project is open right now. A count that finishes loading after you
+  // have switched to another project is thrown away instead of being shown.
+  const openProjectIdRef = useRef<number | null>(null);
+  openProjectIdRef.current = currentProject?.id ?? null;
+
   const [categories, setCategories] = useState<CategoryCount[]>([]);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
 
   async function loadCategories() {
     if (!currentProject) return;
     const db = await getDb();
+    // "left" counts everything not yet CONFIRMED — a draft (typed or
+    // AI-suggested) still counts as left, since it hasn't been checked by a
+    // person. (Before, this counted only fully-blank strings, so a category
+    // full of unreviewed AI drafts read as "0 left" / 100% complete.)
     const rows = (await db.select(
       `SELECT s.category as category, s.subcategory as subcategory,
               COUNT(*) as total,
-              SUM(CASE WHEN ${SQL_UNTRANSLATED} THEN 1 ELSE 0 END) as untranslated
+              SUM(CASE WHEN ${SQL_CONFIRMED} THEN 1 ELSE 0 END) as confirmed
        FROM strings s
        LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
        WHERE s.category IS NOT NULL AND s.game_id = $2
        GROUP BY s.category, s.subcategory
        ORDER BY total DESC`,
       [currentProject.target_language, currentProject.game_id]
-    )) as { category: string; subcategory: string | null; total: number; untranslated: number }[];
+    )) as { category: string; subcategory: string | null; total: number; confirmed: number }[];
 
     const grouped: Record<string, CategoryCount> = {};
     for (const row of rows) {
       if (!grouped[row.category]) {
-        grouped[row.category] = { category: row.category, total: 0, untranslated: 0, subcategories: [] };
+        grouped[row.category] = { category: row.category, total: 0, left: 0, subcategories: [] };
       }
+      const left = row.total - row.confirmed;
       grouped[row.category].total += row.total;
-      grouped[row.category].untranslated += row.untranslated;
+      grouped[row.category].left += left;
       grouped[row.category].subcategories.push({
         subcategory: row.subcategory ?? "general",
         total: row.total,
-        untranslated: row.untranslated,
+        left,
       });
     }
 
+    if (currentProject.id !== openProjectIdRef.current) return;
     setCategories(Object.values(grouped).sort((a, b) => b.total - a.total));
   }
 
@@ -67,7 +78,10 @@ export function useProjectStats(currentProject: Project | null) {
   // Every number here is counted from the strings themselves (joined to their
   // translation, if any) using the shared definitions in statusFilters.ts, so
   // each count always matches the list you get by clicking it.
-  async function refreshCounts() {
+  //
+  // { statusOnly: true } refreshes just the numbers at the top of the sidebar
+  // and skips the (slower) category tree.
+  async function refreshCounts(options?: { statusOnly?: boolean }) {
     if (!currentProject) return;
     const db = await getDb();
     const result = (await db.select(
@@ -93,8 +107,9 @@ export function useProjectStats(currentProject: Project | null) {
       flagged: number;
     }[];
 
+    if (currentProject.id !== openProjectIdRef.current) return;
     setStatusCounts(result[0]);
-    await loadCategories();
+    if (!options?.statusOnly) await loadCategories();
   }
 
   return {

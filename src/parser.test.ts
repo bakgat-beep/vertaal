@@ -31,6 +31,11 @@ describe("parseLocFile", () => {
     expect(result).toEqual([{ key: "some_key", text: "Some text" }]);
   });
 
+  it("parses a key containing a hyphen, instead of silently skipping the whole line", () => {
+    const result = parseLocFile(`some-key-here:0 "Some text"`);
+    expect(result).toEqual([{ key: "some-key-here", text: "Some text" }]);
+  });
+  
   it("parses a key containing dots", () => {
     const result = parseLocFile(`some.nested.key:0 "Some text"`);
     expect(result).toEqual([{ key: "some.nested.key", text: "Some text" }]);
@@ -194,15 +199,62 @@ describe("escapeForLocExport", () => {
     expect(escapeForLocExport("Simple text")).toBe("Simple text");
   });
 
-  it("escapes a quote", () => {
+  it("escapes a bare quote", () => {
     expect(escapeForLocExport(`He said "hello"`)).toBe(`He said \\"hello\\"`);
   });
 
-  it("escapes a backslash", () => {
-    expect(escapeForLocExport(`Path C:\\Users\\test`)).toBe(`Path C:\\\\Users\\\\test`);
+  it("escapes a bare backslash", () => {
+    expect(escapeForLocExport(`Path C:\\Users\\Mike`)).toBe(`Path C:\\\\Users\\\\Mike`);
   });
 
-  it("escapes backslashes and quotes together without double-escaping", () => {
+  it("escapes a bare backslash and a bare quote together", () => {
     expect(escapeForLocExport(`Mixed \\ and "quote"`)).toBe(`Mixed \\\\ and \\"quote\\"`);
+  });
+
+  // The regression that mattered: the game's own \n line break is stored as the
+  // two characters backslash + n, and must come out exactly the same.
+  it("keeps the game's own \\n line breaks exactly as they are", () => {
+    expect(escapeForLocExport("Line one\\nLine two")).toBe("Line one\\nLine two");
+  });
+
+  it("keeps the game's own \\t, \\\" and \\\\ escapes exactly as they are", () => {
+    expect(escapeForLocExport("a\\tb")).toBe("a\\tb");
+    expect(escapeForLocExport('He said \\"hi\\"')).toBe('He said \\"hi\\"');
+    expect(escapeForLocExport("back\\\\slash")).toBe("back\\\\slash");
+  });
+
+  it("turns a real line break (Enter pressed in the text box) into \\n so the entry stays on one line", () => {
+    expect(escapeForLocExport("Line one\nLine two")).toBe("Line one\\nLine two");
+    expect(escapeForLocExport("Line one\r\nLine two")).toBe("Line one\\nLine two");
+  });
+
+  it("is safe to apply twice (already-escaped text is not escaped again)", () => {
+    const once = escapeForLocExport(`Say "x" at C:\\Users\\Mike`);
+    expect(escapeForLocExport(once)).toBe(once);
+  });
+
+  it("round-trips a real loc line: import it, export it, get the same text back", () => {
+    const line = ` some_key:0 "First line.\\n\\nSecond with \\"quotes\\" and #bold text#!"`;
+    const [entry] = parseLocFile(line);
+    expect(escapeForLocExport(entry.text)).toBe(entry.text);
+  });
+});
+
+describe("restoreTokens with $ characters in game codes", () => {
+  // JavaScript's String.replace treats "$" in the replacement as special
+  // instructions. These are real Paradox codes that contain "$".
+  it("restores HOI4's literal $$ exactly", () => {
+    const { text, tokens } = protectTokens("Costs 5$$ more");
+    expect(restoreTokens(text, tokens)).toBe("Costs 5$$ more");
+  });
+
+  it("restores a function whose text contains $' exactly", () => {
+    const source = "Hello $NAME$ and [GetX('a$')] end";
+    const { text, tokens } = protectTokens(source);
+    expect(restoreTokens(text, tokens)).toBe(source);
+  });
+
+  it("restores a token made of the special sequences $& and $` exactly", () => {
+    expect(restoreTokens("x __TOKEN_0__ y __TOKEN_1__ z", ["$&", "$`"])).toBe("x $& y $` z");
   });
 });

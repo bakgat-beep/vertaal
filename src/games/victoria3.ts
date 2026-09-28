@@ -1,6 +1,7 @@
 import { join, documentDir } from "@tauri-apps/api/path";
 import type { GameAdapter } from "./types";
 import { findModLocRelativeParts } from "../import";
+import { modFolderName } from "../fileNames";
 
 const NATIVE_LANGUAGES: Record<string, string> = {
   "brazilian portuguese": "braz_por",
@@ -87,7 +88,7 @@ export const victoria3Adapter: GameAdapter = {
   toModExportRelativePath,
   buildMetadata: (modName, targetLanguage) => ({
     name: modName,
-    id: modName.toLowerCase().replace(/\s+/g, "-"),
+    id: modFolderName(modName),
     version: "0.1.0",
     supported_game_version: "1.*",
     short_description: `${targetLanguage} translation of Victoria 3.`,

@@ -12,6 +12,7 @@
     "sql:allow-execute",
     "sql:allow-select",
     "dialog:default",
+    "core:window:allow-close",
     "fs:allow-read-text-file",
     "fs:allow-read-dir",
     "fs:allow-write-text-file",
@@ -38,6 +39,10 @@
         }
       ]
     },
-    "fs:default"
+    "fs:default",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "http://*" }, { "url": "https://*" }]
+    }
   ]
 }

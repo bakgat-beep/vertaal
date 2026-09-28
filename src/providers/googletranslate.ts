@@ -1,5 +1,14 @@
 import type { TranslationProvider, TranslationRequest, TranslationResult, ProviderConfig } from "./types";
 
+// Unlike every other provider, this one deliberately does NOT go through
+// Tauri's HTTP plugin. Google's endpoint (see below) blocks anything that
+// doesn't look like a real browser request, and a browser-like User-Agent
+// and Referer alone were not enough to get past that in practice — the
+// plain webview fetch, which sends a genuine browser fingerprint Google
+// actually recognises, is what reliably works. This means this request
+// needs translate.googleapis.com allowed in tauri.conf.json's CSP
+// connect-src, unlike the other providers.
+//
 // Uses Google Translate's public web-facing endpoint (the same one
 // translate.google.com calls internally) rather than the paid Cloud
 // Translation API — no API key, no billing. Confirmed via three independent
@@ -21,9 +30,19 @@ const LANGUAGE_CODE_MAP: Record<string, string> = {
   russian: "ru",
   japanese: "ja",
   chinese: "zh-CN",
+  turkish: "tr",
+  arabic: "ar",
+  hindi: "hi",
+  korean: "ko",
   swahili: "sw",
   zulu: "zu",
   xhosa: "xh",
+  // Raw values a game's own nativeLanguages can produce (see games/*.ts),
+  // used directly as request.sourceLanguage/targetLanguage — not language
+  // names, so they need their own entries here rather than relying on the
+  // name-based ones above.
+  braz_por: "pt",
+  simp_chinese: "zh-CN",
 };
 
 function toGoogleCode(language: string): string {

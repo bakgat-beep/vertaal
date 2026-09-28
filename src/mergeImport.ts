@@ -1,8 +1,11 @@
-import { readTextFile } from "@tauri-apps/plugin-fs";
+import { readTextFile, readDir } from "@tauri-apps/plugin-fs";
+import { join } from "@tauri-apps/api/path";
 import { getDb } from "./db";
 import type { Project } from "./types";
 import { checkExportMatchesProject } from "./exportCheck";
 import { baselineForImportedTranslation } from "./sourceChange";
+import { matchesProjectExportFile } from "./fileNames";
+import { isAtLeastAsNew } from "./timestamps";
 
 interface PortableTranslation {
   key: string;
@@ -90,7 +93,9 @@ export async function importPortableProjectData(project: Project, filePath: stri
     )) as { translated_text: string; updated_at: string | null }[];
     const local = localTranslation[0];
 
-    if (local?.updated_at && t.updated_at && local.updated_at >= t.updated_at) {
+    // Compared by the moment each represents, not as plain text — the two
+    // sides can be in different formats (see timestamps.ts).
+    if (local?.updated_at && t.updated_at && isAtLeastAsNew(local.updated_at, t.updated_at)) {
       summary.skippedLocalNewer++;
       continue;
     }
@@ -164,4 +169,45 @@ export async function importPortableProjectData(project: Project, filePath: stri
   }
 
   return summary;
+}
+
+
+export interface CombinedMergeSummary extends MergeSummary {
+  filesProcessed: string[];
+}
+
+// Merges in EVERY contributor's shareable file for this project found in a
+// synced folder — not just one. Each contributor writes only their own file
+// (see fileNames.ts), so this is what lets "Pull + Merge" pick up everyone's
+// work at once, rather than only whichever single file the old, one-shared-
+// file design used to assume. A folder with nobody's file yet (a fresh, empty
+// shared folder) simply merges nothing — that's normal, not an error.
+export async function importAllContributorFiles(project: Project, folderPath: string): Promise<CombinedMergeSummary> {
+  const entries = await readDir(folderPath);
+  const fileNames = entries
+    .map((e) => e.name)
+    .filter((name): name is string => !!name && matchesProjectExportFile(name, project))
+    .sort();
+
+  const combined: CombinedMergeSummary = {
+    applied: 0,
+    skippedNoLocalString: 0,
+    skippedLocalNewer: 0,
+    glossaryAdded: 0,
+    glossaryUpdated: 0,
+    filesProcessed: [],
+  };
+
+  for (const fileName of fileNames) {
+    const filePath = await join(folderPath, fileName);
+    const summary = await importPortableProjectData(project, filePath);
+    combined.applied += summary.applied;
+    combined.skippedNoLocalString += summary.skippedNoLocalString;
+    combined.skippedLocalNewer += summary.skippedLocalNewer;
+    combined.glossaryAdded += summary.glossaryAdded;
+    combined.glossaryUpdated += summary.glossaryUpdated;
+    combined.filesProcessed.push(fileName);
+  }
+
+  return combined;
 }

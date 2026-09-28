@@ -1,5 +1,13 @@
 import type { TranslationProvider, TranslationRequest, TranslationResult, ProviderConfig } from "./types";
 
+// Requests go through Tauri's HTTP plugin, not the page's own fetch: the
+// browser view enforces CORS and a fixed connect-src allowlist, which
+// blocks self-hosted servers (OpenAI-compatible, LibreTranslate) and even
+// DeepL, whose API rejects browser-origin requests outright. Requests made
+// this way run in the native backend, so none of that applies.
+import { fetch } from "@tauri-apps/plugin-http";
+import { languageDisplayName } from "../languageCodes";
+
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
 function resolveBaseUrl(config: ProviderConfig): string {
@@ -16,7 +24,7 @@ async function translate(request: TranslationRequest, config: ProviderConfig): P
     : "";
 
   const prompt =
-    `You are a professional ${request.sourceLanguage} to ${request.targetLanguage} translator. Your goal is to accurately convey the meaning and nuances of the original text while adhering to grammar, vocabulary, and cultural sensitivities. Produce only the translation, without any additional explanations or commentary.${glossaryBlock}\n\nPlease translate the following text:\n\n${request.text}`;
+    `You are a professional ${languageDisplayName(request.sourceLanguage)} to ${languageDisplayName(request.targetLanguage)} translator. Your goal is to accurately convey the meaning and nuances of the original text while adhering to grammar, vocabulary, and cultural sensitivities. Produce only the translation, without any additional explanations or commentary.${glossaryBlock}\n\nPlease translate the following text:\n\n${request.text}`;
 
   const baseUrl = resolveBaseUrl(config);
   const headers: Record<string, string> = { "Content-Type": "application/json" };

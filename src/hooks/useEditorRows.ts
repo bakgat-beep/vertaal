@@ -1,9 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EditorRow, Project } from "../types";
 import { type ViewMode, BATCH_SIZE } from "../App";
 import { getDb } from "../db";
 import { createWriteQueue } from "../writeQueue";
-import { SQL_UNTRANSLATED, SQL_DRAFT, SQL_CONFIRMED, SQL_OUTDATED, SQL_ISSUES } from "../statusFilters";
+import { SQL_UNTRANSLATED, SQL_OUTDATED, SQL_ISSUES, SQL_DRAFT, SQL_CONFIRMED } from "../statusFilters";
+import { buildStatusClause, shrinkingViewClause, buildStillInViewSql } from "../pagination";
 
 interface UseEditorRowsParams {
   currentProject: Project | null;
@@ -11,7 +12,7 @@ interface UseEditorRowsParams {
   selectedRow: EditorRow | null;
   setSelectedRow: (row: EditorRow | null) => void;
   loadCategories: () => Promise<void>;
-  refreshCounts: () => Promise<void>;
+  refreshCounts: (options?: { statusOnly?: boolean }) => Promise<void>;
   setStatus: (status: string) => void;
 }
 
@@ -54,6 +55,39 @@ export function useEditorRows({
   const rowsRef = useRef<EditorRow[]>([]);
   const draftsRef = useRef<Record<string, string>>({});
 
+  // Which project is open RIGHT NOW (updated on every render). A late reload
+  // that belongs to a project you have since left — for instance a batch that
+  // finishes after you switched projects — checks this and is dropped, so one
+  // project's strings can never appear on another project's screen.
+  const openProjectIdRef = useRef<number | null>(null);
+  openProjectIdRef.current = currentProject?.id ?? null;
+
+  // True while a list of strings is being loaded (including when a project is
+  // first opened). Lets the screen show "nothing here" only when a list really
+  // is empty, not while it is still on its way.
+  const [pageLoading, setPageLoading] = useState(false);
+  const loadsInFlightRef = useRef(0);
+
+  // The numbers in the sidebar (Untranslated / Drafts / Confirmed / ... and the
+  // "left" beside each category) are counted from the database, so they have to
+  // be re-counted after work that changes them. Doing that after every single
+  // edit would be wasteful, so the re-count is put off for a moment and several
+  // edits in quick succession share one.
+  const countsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingFullCountsRef = useRef(false);
+  function scheduleCountsRefresh(includeCategories: boolean) {
+    const projectId = currentProject?.id ?? null;
+    if (includeCategories) pendingFullCountsRef.current = true;
+    if (countsTimerRef.current) clearTimeout(countsTimerRef.current);
+    countsTimerRef.current = setTimeout(() => {
+      countsTimerRef.current = null;
+      const full = pendingFullCountsRef.current;
+      pendingFullCountsRef.current = false;
+      if (projectId === null || projectId !== openProjectIdRef.current) return; // switched projects meanwhile
+      refreshCounts({ statusOnly: !full }).catch(() => {});
+    }, 400);
+  }
+
   function patchRow(key: string, patch: Partial<EditorRow>): EditorRow | undefined {
     rowsRef.current = rowsRef.current.map((r) => (r.key === key ? { ...r, ...patch } : r));
     setRows(rowsRef.current);
@@ -69,16 +103,7 @@ export function useEditorRows({
     new Set(["untranslated", "draft", "human-confirmed"])
   );
 
-  function buildStatusClause(filter: Set<string>): string {
-    const clauses: string[] = [];
-    if (filter.has("untranslated")) clauses.push(SQL_UNTRANSLATED);
-    if (filter.has("draft")) clauses.push(SQL_DRAFT);
-    if (filter.has("human-confirmed")) clauses.push(SQL_CONFIRMED);
-    if (clauses.length === 0) return "1=0";
-    return `(${clauses.join(" OR ")})`;
-  }
-
-  async function loadPage(
+  async function loadPageNow(
     mode: ViewMode,
     newOffset: number,
     category?: string,
@@ -93,6 +118,7 @@ export function useEditorRows({
     searchTermOverride?: string
   ) {
     if (!currentProject) return;
+    if (currentProject.id !== openProjectIdRef.current) return; // a late call from a project that is no longer open
     setStatus("Loading...");
     // Make sure any save that is still in flight (e.g. the box you just
     // clicked out of) has landed before we read the database again.
@@ -102,11 +128,31 @@ export function useEditorRows({
     const lang = currentProject.target_language;
     const statusFilter = statusFilterOverride ?? categoryStatusFilter;
 
+    // "Next" (same list, exactly one page further on). In lists where strings
+    // drop out as you work (Untranslated, Drafts, ...), the strings you have
+    // just finished on this page no longer count, so jumping a full page ahead
+    // would skip strings you haven't seen. Only the strings on this page that
+    // are still in the list are stepped over. See pagination.ts.
+    if (mode === viewMode && newOffset === offset + BATCH_SIZE) {
+      const clause = shrinkingViewClause(mode, statusFilter);
+      const keys = rowsRef.current.map((r) => r.key);
+      if (clause && keys.length > 0) {
+        try {
+          const stillThere = (await db.select(buildStillInViewSql(clause, keys.length), [lang, gameId, ...keys])) as {
+            n: number;
+          }[];
+          newOffset = offset + Number(stillThere[0]?.n ?? BATCH_SIZE);
+        } catch {
+          // If the check fails for any reason, fall back to the plain next page.
+        }
+      }
+    }
+
     const baseSelect = `
       SELECT s.key as key, s.game_id as game_id, s.source_text as source_text,
              s.source_text_hash as source_text_hash,
              s.context_label as context_label, s.file_path as file_path,
-             s.category as category, s.subcategory as subcategory,
+             s.category as category, s.subcategory as subcategory, s.removed_at as removed_at,
              t.translated_text as translated_text, t.status as status,
              t.flagged as flagged, t.translated_by as translated_by, t.updated_at as updated_at,
              t.source_text_at_translation as source_text_at_translation
@@ -169,6 +215,9 @@ export function useEditorRows({
       batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
     }
 
+    // You may have switched projects while this was loading.
+    if (currentProject.id !== openProjectIdRef.current) return;
+
     rowsRef.current = batch;
     setRows(batch);
     setOffset(newOffset);
@@ -180,11 +229,32 @@ export function useEditorRows({
     setDrafts(initialDrafts);
 
     await loadCategories();
+    scheduleCountsRefresh(false); // the numbers at the top of the sidebar too
     setStatus(
       batch.length === 0
         ? "No strings to show here."
         : `Showing strings ${newOffset + 1}–${newOffset + batch.length} · ${VIEW_LABELS[mode]}`
     );
+  }
+
+  // The public version of loadPage: same thing, but keeps `pageLoading` true
+  // for exactly as long as any load is running (even if one throws).
+  async function loadPage(
+    mode: ViewMode,
+    newOffset: number,
+    category?: string,
+    subcategory?: string,
+    statusFilterOverride?: Set<string>,
+    searchTermOverride?: string
+  ) {
+    loadsInFlightRef.current += 1;
+    setPageLoading(true);
+    try {
+      await loadPageNow(mode, newOffset, category, subcategory, statusFilterOverride, searchTermOverride);
+    } finally {
+      loadsInFlightRef.current -= 1;
+      if (loadsInFlightRef.current === 0) setPageLoading(false);
+    }
   }
 
   function runSearch() {
@@ -216,6 +286,49 @@ export function useEditorRows({
     setSubcategoryFilter(subcategory);
     loadPage("subcategory", 0, category, subcategory);
   }
+
+  // Opening a DIFFERENT project starts from a clean slate and shows All
+  // strings, unfiltered. (Before, the editor opened blank until you clicked
+  // something, and after switching projects it kept showing the previous
+  // project's strings — edits made there would have been saved into the wrong
+  // project.) Saves still waiting from the previous project are finished first,
+  // and only then is anything cleared, so no typed text is lost.
+  useEffect(() => {
+    if (!currentProject) return;
+    let cancelled = false;
+    // A recount that was waiting for the previous project is no longer wanted.
+    if (countsTimerRef.current) clearTimeout(countsTimerRef.current);
+    countsTimerRef.current = null;
+    pendingFullCountsRef.current = false;
+    loadsInFlightRef.current += 1;
+    setPageLoading(true);
+    (async () => {
+      try {
+        await queueRef.current.flush();
+        if (cancelled) return;
+        rowsRef.current = [];
+        draftsRef.current = {};
+        setRows([]);
+        setDrafts({});
+        setOffset(0);
+        setViewMode("all");
+        setSearchTerm("");
+        setCategoryFilter(null);
+        setSubcategoryFilter(null);
+        setCategoryStatusFilter(new Set(["untranslated", "draft", "human-confirmed"]));
+        setSelectedRow(null);
+        await loadPage("all", 0);
+      } catch (err) {
+        setStatus(`Could not load the strings: ${err}`);
+      } finally {
+        loadsInFlightRef.current -= 1;
+        if (loadsInFlightRef.current === 0) setPageLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProject?.id]);
 
   // --- Draft / confirm / flag ---
 
@@ -255,6 +368,7 @@ export function useEditorRows({
 
       const updated = patchRow(row.key, { translated_text: newText, status: newStatus });
       if (updated && selectedRow?.key === row.key) setSelectedRow(updated);
+      scheduleCountsRefresh(true); // a draft moves a string out of "untranslated"
     });
   }
 
@@ -273,16 +387,18 @@ export function useEditorRows({
       const finalText = typed.trim() !== "" ? typed : latest.source_text;
 
       await db.execute(
-        `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_text_at_translation)
-         VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), $6)
+        `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_text_at_translation, flagged)
+         VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), $6, 0)
          ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET
            translated_text = excluded.translated_text,
            status = 'human-confirmed',
            translated_by = excluded.translated_by,
            updated_at = excluded.updated_at,
-           source_text_at_translation = excluded.source_text_at_translation`,
+           source_text_at_translation = excluded.source_text_at_translation,
+           flagged = 0`,
         // Confirming means "I've checked this against the source as it is now",
-        // so the current source text becomes the new reference point.
+        // so the current source text becomes the new reference point. It also
+        // clears any flag — confirming IS the follow-up the flag was asking for.
         [row.key, row.game_id, lang, finalText, contributorName, latest.source_text]
       );
 
@@ -305,9 +421,10 @@ export function useEditorRows({
         translated_text: finalText,
         status: "human-confirmed",
         source_text_at_translation: latest.source_text,
+        flagged: 0,
       });
       if (updated) setSelectedRow(updated);
-      refreshCounts();
+      scheduleCountsRefresh(true);
     });
   }
 
@@ -332,6 +449,7 @@ export function useEditorRows({
 
       const updated = patchRow(row.key, { flagged: newFlagged });
       if (updated && selectedRow?.key === row.key) setSelectedRow(updated);
+      scheduleCountsRefresh(false); // only the Flagged number changes
     });
   }
 
@@ -343,6 +461,7 @@ export function useEditorRows({
 
   return {
     rows,
+    pageLoading,
     offset,
     drafts,
     viewMode,

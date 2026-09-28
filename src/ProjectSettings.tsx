@@ -75,8 +75,9 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
         [modName, providerId, model || null, parsedRetryDelay, parsedGoogleDelay, trimmedSourceOverride, trimmedTargetOverride, hiddenFromRecent, project.id]
       );
 
-      if (!isManual && (apiKeyInput.trim() || baseUrl.trim())) {
-        await setProviderCredentials(providerId, apiKeyInput.trim() || null, baseUrl.trim() || null);
+      if (!isManual && provider && !provider.isLocal) {
+        // A blank key box means "keep the saved key" (undefined), never "delete it".
+        await setProviderCredentials(providerId, apiKeyInput.trim() || undefined, baseUrl.trim() || null);
         if (apiKeyInput.trim()) {
           setHasApiKey(true);
           setApiKeyInput("");

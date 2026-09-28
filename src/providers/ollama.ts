@@ -7,6 +7,14 @@
 import type { TranslationProvider, TranslationRequest, TranslationResult, ProviderConfig } from "./types";
 import { detectInstalledModels } from "../ollama";
 
+// Requests go through Tauri's HTTP plugin, not the page's own fetch: the
+// browser view enforces CORS and a fixed connect-src allowlist, which
+// blocks self-hosted servers (OpenAI-compatible, LibreTranslate) and even
+// DeepL, whose API rejects browser-origin requests outright. Requests made
+// this way run in the native backend, so none of that applies.
+import { fetch } from "@tauri-apps/plugin-http";
+import { languageDisplayName } from "../languageCodes";
+
 async function translate(request: TranslationRequest, config: ProviderConfig): Promise<TranslationResult> {
   if (!config.model) throw new Error("No Ollama model configured.");
 
@@ -15,7 +23,7 @@ async function translate(request: TranslationRequest, config: ProviderConfig): P
     : "";
 
   const prompt =
-    `You are a professional ${request.sourceLanguage} to ${request.targetLanguage} translator. Your goal is to accurately convey the meaning and nuances of the original text while adhering to grammar, vocabulary, and cultural sensitivities. Produce only the translation, without any additional explanations or commentary.${glossaryBlock}\n\nPlease translate the following text:\n\n${request.text}`;
+    `You are a professional ${languageDisplayName(request.sourceLanguage)} to ${languageDisplayName(request.targetLanguage)} translator. Your goal is to accurately convey the meaning and nuances of the original text while adhering to grammar, vocabulary, and cultural sensitivities. Produce only the translation, without any additional explanations or commentary.${glossaryBlock}\n\nPlease translate the following text:\n\n${request.text}`;
 
   const response = await fetch("http://localhost:11434/api/chat", {
     method: "POST",
@@ -66,3 +74,5 @@ export const ollamaProvider: TranslationProvider = {
   detectAvailability,
   listModels,
 };
+
+export { detectInstalledModels };

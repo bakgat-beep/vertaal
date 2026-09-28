@@ -32,18 +32,20 @@ import { exportMod, getExportPreflight } from "./export";
 import { translateAndSave } from "./translate";
 import { openPath } from "@tauri-apps/plugin-opener";
 import ExportSummary, { type ExportPreflight, type ExportOutcome } from "./ExportSummary";
+import { verifyConfirmedStrings } from "./verifyConfirmed";
+import { formatLocalTimestamp } from "./timestamps";
 
 export type ViewMode = "all" | "untranslated" | "translated" | "draft" | "outdated" | "issues" | "flagged" | "search" | "category" | "subcategory";
 
 export interface SubcategoryCount {
   subcategory: string;
   total: number;
-  untranslated: number;
+  left: number; // not yet CONFIRMED (a draft still counts as left)
 }
 export interface CategoryCount {
   category: string;
   total: number;
-  untranslated: number;
+  left: number; // not yet CONFIRMED (a draft still counts as left)
   subcategories: SubcategoryCount[];
 }
 
@@ -72,6 +74,7 @@ function App() {
 
   const {
     rows,
+    pageLoading,
     offset,
     drafts,
     viewMode,
@@ -188,7 +191,12 @@ function App() {
       return;
     }
     await refreshCounts();
-    setStatus(`Import complete. Processed ${outcome.filesProcessed} files, ${outcome.stringsProcessed} strings this run.`);
+    const removedNote = outcome.removedStrings > 0 ? `, ${outcome.removedStrings} no longer in the game files` : "";
+    const reappearedNote = outcome.reappearedStrings > 0 ? `, ${outcome.reappearedStrings} reappeared` : "";
+    setStatus(
+      `Import complete. ${outcome.filesProcessed} files, ${outcome.stringsProcessed} strings: ` +
+        `${outcome.newStrings} new, ${outcome.changedStrings} changed, ${outcome.unchangedStrings} unchanged${removedNote}${reappearedNote}.`
+    );
   }
   
   // True when the game's source text is not exactly what this translation was
@@ -197,9 +205,11 @@ function App() {
     return isSourceChanged(row);
   }
   
-  function percentComplete(total: number, untranslated: number): number {
+  // "Complete" means CONFIRMED, not just "has some text" — a category full of
+  // unreviewed AI drafts should not read as done.
+  function percentComplete(total: number, left: number): number {
     if (total === 0) return 100;
-    return Math.round(((total - untranslated) / total) * 100);
+    return Math.round(((total - left) / total) * 100);
   }
 
   function statusMeta(row: EditorRow): { label: string; className: string; barColor: string } {
@@ -276,7 +286,7 @@ function App() {
     setStatus("Backing up database...");
     try {
       await backupDatabase(chosenPath);
-      setStatus(`Backup saved: ${chosenPath}`);
+      setStatus(`Backup saved: ${chosenPath} (saved API keys and your GitHub token are left out of backups on purpose)`);
     } catch (err) {
       setStatus(`Backup failed: ${err}`);
     }
@@ -407,6 +417,33 @@ function App() {
     refreshCounts();
     await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
     setStatus(`Confirmed ${targets.length} strings on this page.`);
+  }
+
+  // Checks every confirmed string for a protected code (a variable, icon, or
+  // line break) that got dropped or duplicated compared to the source text,
+  // and flags any that have a problem. Running it again is safe — it never
+  // un-flags anything, so a string you've already reviewed and re-confirmed
+  // stays fixed.
+  async function handleVerifyConfirmed() {
+    if (!currentProject) return;
+    await flushWrites();
+    setStatus("Verifying confirmed strings...");
+    const result = await verifyConfirmedStrings(currentProject);
+
+    if (result.problems.length === 0) {
+      setStatus(`Verified ${result.checked.toLocaleString()} confirmed string(s) — no issues found.`);
+      return;
+    }
+
+    await refreshCounts();
+    await loadPage("flagged", 0);
+    const flagNote =
+      result.flaggedNow > 0
+        ? `${result.flaggedNow.toLocaleString()} newly flagged`
+        : "all were already flagged";
+    setStatus(
+      `Verified ${result.checked.toLocaleString()} confirmed string(s): ${result.problems.length.toLocaleString()} had a protected-code issue (${flagNote}). Showing Flagged.`
+    );
   }
 
     async function copySourceText(text: string) {
@@ -667,6 +704,15 @@ function App() {
                 Confirm names/locations as-is…
               </button>
 
+              <div className="more-menu-section-label">Quality checks</div>
+              <button
+                onClick={() => { handleVerifyConfirmed(); setMoreMenuOpen(false); }}
+                disabled={batchRunning}
+                title="Checks every confirmed string against its source text for a protected code (a variable, icon, formatting code, or line break) that is missing or duplicated, and flags any string with a problem so it drops out of the export until you review it."
+              >
+                Verify confirmed strings…
+              </button>
+
               <div className="more-menu-section-label">Game files</div>
               <button
                 onClick={() => { importFolder(); setMoreMenuOpen(false); }}
@@ -787,18 +833,18 @@ function App() {
               <div
                 className={sidebarClass(viewMode === "category" && categoryFilter === cat.category)}
                 onClick={() => selectCategory(cat.category)}
-                title="Show this category. The number is how many of its strings are still untranslated."
+                title="Show this category. The number is how many of its strings are not yet confirmed (drafts still count as left)."
               >
                 <span onClick={(e) => { e.stopPropagation(); toggleCategoryExpanded(cat.category); }}>
                   {expandedCategories.has(cat.category) ? "▾ " : "▸ "}
                   {cat.category.replace(/_/g, " ")}
                 </span>
-                <span className="sidebar-count" style={{ opacity: cat.untranslated === 0 ? 0.4 : 1 }}>
-                  {cat.untranslated.toLocaleString()} left
+                <span className="sidebar-count" style={{ opacity: cat.left === 0 ? 0.4 : 1 }}>
+                  {cat.left.toLocaleString()} left
                 </span>
               </div>
-              <div className="progress-track" style={{ margin: "0 1rem 0.4rem", opacity: cat.untranslated === 0 ? 0.4 : 1 }}>
-                <div className="progress-fill" style={{ width: `${percentComplete(cat.total, cat.untranslated)}%` }} />
+              <div className="progress-track" style={{ margin: "0 1rem 0.4rem", opacity: cat.left === 0 ? 0.4 : 1 }}>
+                <div className="progress-fill" style={{ width: `${percentComplete(cat.total, cat.left)}%` }} />
               </div>
 
               {expandedCategories.has(cat.category) &&
@@ -814,15 +860,15 @@ function App() {
                       onClick={() => selectSubcategory(cat.category, sub.subcategory)}
                     >
                       <span style={{ fontSize: "0.8rem" }}>{sub.subcategory.replace(/_/g, " ")}</span>
-                      <span className="sidebar-count" style={{ opacity: sub.untranslated === 0 ? 0.4 : 1 }}>
-                        {sub.untranslated.toLocaleString()} left
+                      <span className="sidebar-count" style={{ opacity: sub.left === 0 ? 0.4 : 1 }}>
+                        {sub.left.toLocaleString()} left
                       </span>
                     </div>
                     <div
                       className="progress-track"
-                      style={{ margin: "0 1rem 0.4rem 1.8rem", opacity: sub.untranslated === 0 ? 0.4 : 1 }}
+                      style={{ margin: "0 1rem 0.4rem 1.8rem", opacity: sub.left === 0 ? 0.4 : 1 }}
                     >
-                      <div className="progress-fill" style={{ width: `${percentComplete(sub.total, sub.untranslated)}%` }} />
+                      <div className="progress-fill" style={{ width: `${percentComplete(sub.total, sub.left)}%` }} />
                     </div>
                   </div>
                 ))}
@@ -873,7 +919,7 @@ function App() {
           </div>
 
           <div className="editor-row-list" ref={listRef}>
-          {rows.length === 0 && offset === 0 && countsReady && (
+          {rows.length === 0 && offset === 0 && countsReady && !pageLoading && (
             <div className="empty-state">
               {statusCounts.total === 0 ? (
                 <>
@@ -902,6 +948,7 @@ function App() {
               {rows.map((row) => {
                 const meta = statusMeta(row);
                 const outdated = isOutdated(row);
+                const removed = !!row.removed_at;
                 const isSelected = selectedRow?.key === row.key;
 
                 return (
@@ -912,16 +959,25 @@ function App() {
                     style={{
                       display: "grid",
                       gridTemplateColumns: "minmax(0, 10%) minmax(0, 30%) minmax(0, 50%) minmax(0, 10%)",
-                      borderLeft: outdated ? "4px solid #e0a04c" : `4px solid ${meta.barColor}`,
+                      borderLeft: removed ? "4px solid var(--text-dim)" : outdated ? "4px solid #e0a04c" : `4px solid ${meta.barColor}`,
                       borderBottom: "1px solid var(--border)",
                       padding: "0.5rem",
                       gap: "0.5rem",
+                      opacity: removed ? 0.6 : 1,
                     }}
                   >
                     <div style={{ overflowWrap: "break-word", minWidth: 0 }}>
                       <div className="row-key" style={{ overflowWrap: "break-word" }}>{row.key}</div>
                       <span className={`status-chip ${meta.className}`}>{meta.label}</span>
-                      {outdated && <div style={{ color: "#e0a04c", fontSize: "0.7rem" }}>⚠ source changed</div>}
+                      {removed && (
+                        <div
+                          style={{ color: "var(--text-dim)", fontSize: "0.7rem" }}
+                          title="This string was not found the last time its file was imported — most likely a game patch removed it. It's still safe to leave translated; it just isn't needed anymore."
+                        >
+                          ⊘ no longer in game files
+                        </div>
+                      )}
+                      {!removed && outdated && <div style={{ color: "#e0a04c", fontSize: "0.7rem" }}>⚠ source changed</div>}
                       <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>{row.context_label}</div>
                     </div>
                     <div
@@ -1007,7 +1063,13 @@ function App() {
                     </span>
                   </div>
 
-                  {isOutdated(selectedRow) && (
+                  {selectedRow.removed_at && (
+                    <div className="context-alert context-alert-warning">
+                      ⊘ No longer found in the game's files as of the last import — most likely removed by a patch.
+                      Safe to leave as-is; it just isn't needed in the export anymore.
+                    </div>
+                  )}
+                  {!selectedRow.removed_at && isOutdated(selectedRow) && (
                     <>
                       <div className="context-alert context-alert-warning">
                         ⚠ The original text changed since this was translated
@@ -1026,7 +1088,7 @@ function App() {
                   {selectedRow.updated_at && (
                     <div className="context-field">
                       <div className="context-field-label">Last updated</div>
-                      <div>{selectedRow.updated_at}</div>
+                      <div>{formatLocalTimestamp(selectedRow.updated_at)}</div>
                     </div>
                   )}
 
@@ -1067,7 +1129,7 @@ function App() {
                           }}
                         >
                           <div style={{ color: "var(--text-dim)" }}>
-                            {h.changed_by ?? "unknown"} — {h.changed_at}
+                            {h.changed_by ?? "unknown"} — {formatLocalTimestamp(h.changed_at)}
                           </div>
                           <div>{h.new_text || <em>(cleared)</em>}</div>
                           <button onClick={() => revertToVersion(h.new_text)} style={{ marginTop: "0.2rem" }}>

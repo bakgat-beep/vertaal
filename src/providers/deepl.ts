@@ -1,5 +1,12 @@
 import type { TranslationProvider, TranslationRequest, TranslationResult, ProviderConfig } from "./types";
 
+// Requests go through Tauri's HTTP plugin, not the page's own fetch: the
+// browser view enforces CORS and a fixed connect-src allowlist, which
+// blocks self-hosted servers (OpenAI-compatible, LibreTranslate) and even
+// DeepL, whose API rejects browser-origin requests outright. Requests made
+// this way run in the native backend, so none of that applies.
+import { fetch } from "@tauri-apps/plugin-http";
+
 const LANGUAGE_CODE_MAP: Record<string, string> = {
   acehnese: "ACE",
   afrikaans: "AF",
@@ -15,6 +22,14 @@ const LANGUAGE_CODE_MAP: Record<string, string> = {
   belarusian: "BE",
   bengali: "BN",
   bhojpuri: "BHO",
+  // Raw values a game's own nativeLanguages can produce (see games/*.ts),
+  // used directly as request.sourceLanguage/targetLanguage — not language
+  // names, so they need their own entries here rather than relying on the
+  // name-based ones below. Both map to the plain (non-regional) DeepL code:
+  // the "-BR"/"-HANS" variants are target-only in DeepL's API and would
+  // fail if this value were ever used as the SOURCE language.
+  braz_por: "PT",
+  simp_chinese: "ZH",
   bosnian: "BS",
   breton: "BR",
   bulgarian: "BG",

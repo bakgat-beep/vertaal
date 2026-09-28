@@ -1,6 +1,7 @@
 import { join, documentDir } from "@tauri-apps/api/path";
 import type { GameAdapter } from "./types";
 import { findModLocRelativeParts } from "../import";
+import { modFolderName } from "../fileNames";
 
 const NATIVE_LANGUAGES: Record<string, string> = {
   "brazilian portuguese": "braz_por",
@@ -94,9 +95,9 @@ export const stellarisAdapter: GameAdapter = {
   toModExportRelativePath,
   buildMetadata: (modName, targetLanguage) => ({
     name: modName,
-    id: modName.toLowerCase().replace(/\s+/g, "-"),
+    id: modFolderName(modName),
     version: "0.1.0",
-    supported_game_version: "3.*",
+    supported_game_version: "4.*",
     short_description: `${targetLanguage} translation of Stellaris.`,
     tags: ["Translation"],
     relationships: [],
@@ -104,9 +105,9 @@ export const stellarisAdapter: GameAdapter = {
   }),
 
   buildDescriptor: (modName) =>
-    `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${modName}"\nsupported_version="v3.*"\n`,
+    `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${modName}"\nsupported_version="v4.*"\n`,
   buildOuterModPointer: (modName, modRootAbsolutePath) => ({
-    fileName: `${modName.toLowerCase().replace(/\s+/g, "-")}.mod`,
-    content: `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${modName}"\nsupported_version="v3.*"\npath="${toUnixPath(modRootAbsolutePath)}"\n`,
+    fileName: `${modFolderName(modName)}.mod`,
+content: `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${modName}"\nsupported_version="v4.*"\npath="${toUnixPath(modRootAbsolutePath)}"\n`,
   }),
 };

@@ -1,11 +1,13 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { mkdir, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { exists, mkdir, writeFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { getDb } from "./db";
 import type { Project } from "./types";
 import { GAME_ADAPTERS } from "./games";
 import { escapeForLocExport } from "./parser";
 import { buildCompanionDescriptor } from "./modExport";
+import { modFolderName } from "./fileNames";
+import { readExportManifest, writeExportManifest, computeStaleRelPaths, removeStaleFiles } from "./exportManifest";
 import type { ExportOutcome, ExportPreflight } from "./ExportSummary";
 import { SQL_OUTDATED } from "./statusFilters";
 
@@ -75,8 +77,13 @@ const PLACEHOLDER_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 async function writePlaceholderThumbnail(modRoot: string) {
+  const thumbnailPath = await join(modRoot, ".metadata", "thumbnail.png");
+  // A previous export's placeholder, or a thumbnail the user has since
+  // replaced with their own artwork, is left alone — only a folder with no
+  // thumbnail yet gets the placeholder.
+  if (await exists(thumbnailPath)) return;
   const pngBytes = Uint8Array.from(atob(PLACEHOLDER_PNG_BASE64), (c) => c.charCodeAt(0));
-  await writeFile(await join(modRoot, ".metadata", "thumbnail.png"), pngBytes);
+  await writeFile(thumbnailPath, pngBytes);
 }
 
 // Exports a vanilla-project's confirmed translations as a standalone mod.
@@ -96,7 +103,7 @@ export async function exportMod(currentProject: Project, onStatus: (msg: string)
     const destFolder = await open({ directory: true, multiple: false, defaultPath: defaultDest });
     if (!destFolder) return { status: "cancelled" };
 
-    const modRoot = await join(destFolder as string, currentProject.mod_name.toLowerCase().replace(/\s+/g, "-"));
+    const modRoot = await join(destFolder as string, modFolderName(currentProject.mod_name));
 
     onStatus("Gathering translated strings...");
     const db = await getDb();
@@ -128,8 +135,16 @@ export async function exportMod(currentProject: Project, onStatus: (msg: string)
       byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
     }
 
-    onStatus(`Writing ${Object.keys(byFile).length} localization files...`);
+    // Remove any loc file the LAST export wrote that this run is not writing
+    // again — otherwise a string that got unflagged, unconfirmed, or
+    // reverted could leave its old (and now wrong) file untouched forever.
+    const previousManifest = await readExportManifest(modRoot);
+    const currentRelPaths = Object.keys(byFile);
+    await removeStaleFiles(modRoot, computeStaleRelPaths(previousManifest, currentRelPaths));
+
+    onStatus(`Writing ${currentRelPaths.length} localization files...`);
     await writeModLocFiles(modRoot, languageCode, byFile);
+    await writeExportManifest(modRoot, currentRelPaths);
 
     await mkdir(await join(modRoot, ".metadata"), { recursive: true });
     await writeTextFile(
@@ -147,11 +162,19 @@ export async function exportMod(currentProject: Project, onStatus: (msg: string)
 
     await db.execute("UPDATE projects SET output_path = $1 WHERE id = $2", [destFolder, currentProject.id]);
 
+    // A string can be confirmed and exportable but still have nowhere to go —
+    // gm.toModRelativePath() returns null for a source file the adapter
+    // doesn't know how to place (rare, but it happens). Those are excluded
+    // here rather than counted as written, so this number is always exactly
+    // how many lines actually landed in a file.
+    const writtenCount = Object.values(byFile).reduce((sum, entries) => sum + entries.length, 0);
+
     return {
       status: "ok",
-      stringsWritten: translated.length,
-      filesWritten: Object.keys(byFile).length,
+      stringsWritten: writtenCount,
+      filesWritten: currentRelPaths.length,
       destPath: modRoot,
+      unmapped: translated.length - writtenCount,
     };
   } catch (err) {
     return { status: "error", error: String(err) };
@@ -179,7 +202,7 @@ export async function exportModCompanion(
     const destFolder = await open({ directory: true, multiple: false, defaultPath: defaultDest });
     if (!destFolder) return { status: "cancelled" };
 
-    const modRoot = await join(destFolder as string, currentProject.mod_name.toLowerCase().replace(/\s+/g, "-"));
+    const modRoot = await join(destFolder as string, modFolderName(currentProject.mod_name));
 
     onStatus("Gathering translated strings...");
     const db = await getDb();
@@ -211,8 +234,13 @@ export async function exportModCompanion(
       byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
     }
 
-    onStatus(`Writing ${Object.keys(byFile).length} localization files...`);
+    const previousManifest = await readExportManifest(modRoot);
+    const currentRelPaths = Object.keys(byFile);
+    await removeStaleFiles(modRoot, computeStaleRelPaths(previousManifest, currentRelPaths));
+
+    onStatus(`Writing ${currentRelPaths.length} localization files...`);
     await writeModLocFiles(modRoot, languageCode, byFile);
+    await writeExportManifest(modRoot, currentRelPaths);
 
     await mkdir(await join(modRoot, ".metadata"), { recursive: true });
     const metadata = {
@@ -234,11 +262,14 @@ export async function exportModCompanion(
 
     await db.execute("UPDATE projects SET output_path = $1 WHERE id = $2", [destFolder, currentProject.id]);
 
+    const writtenCount = Object.values(byFile).reduce((sum, entries) => sum + entries.length, 0);
+
     return {
       status: "ok",
-      stringsWritten: translated.length,
-      filesWritten: Object.keys(byFile).length,
+      stringsWritten: writtenCount,
+      filesWritten: currentRelPaths.length,
       destPath: modRoot,
+      unmapped: translated.length - writtenCount,
     };
   } catch (err) {
     return { status: "error", error: String(err) };

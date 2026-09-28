@@ -1,5 +1,12 @@
 import type { TranslationProvider, TranslationRequest, TranslationResult, ProviderConfig } from "./types";
 
+// Requests go through Tauri's HTTP plugin, not the page's own fetch: the
+// browser view enforces CORS and a fixed connect-src allowlist, which
+// blocks self-hosted servers (OpenAI-compatible, LibreTranslate) and even
+// DeepL, whose API rejects browser-origin requests outright. Requests made
+// this way run in the native backend, so none of that applies.
+import { fetch } from "@tauri-apps/plugin-http";
+
 const LANGUAGE_CODE_MAP: Record<string, string> = {
   english: "en",
   afrikaans: "af",
@@ -13,6 +20,19 @@ const LANGUAGE_CODE_MAP: Record<string, string> = {
   russian: "ru",
   japanese: "ja",
   chinese: "zh",
+  turkish: "tr",
+  arabic: "ar",
+  hindi: "hi",
+  korean: "ko",
+  swahili: "sw",
+  zulu: "zu",
+  xhosa: "xh",
+  // Raw values a game's own nativeLanguages can produce (see games/*.ts),
+  // used directly as request.sourceLanguage/targetLanguage — not language
+  // names, so they need their own entries here rather than relying on the
+  // name-based ones above.
+  braz_por: "pt",
+  simp_chinese: "zh",
 };
 
 function toLibreCode(language: string): string {

@@ -1,6 +1,7 @@
 import { join, documentDir } from "@tauri-apps/api/path";
 import type { GameAdapter } from "./types";
 import { findModLocRelativeParts } from "../import";
+import { modFolderName } from "../fileNames";
 
 const NATIVE_LANGUAGES: Record<string, string> = {
   french: "french",
@@ -82,7 +83,7 @@ export const ck3Adapter: GameAdapter = {
   toModExportRelativePath,
   buildMetadata: (modName, targetLanguage) => ({
     name: modName,
-    id: modName.toLowerCase().replace(/\s+/g, "-"),
+    id: modFolderName(modName),
     version: "0.1.0",
     supported_game_version: "1.*",
     short_description: `${targetLanguage} translation of Crusader Kings III.`,
@@ -92,7 +93,7 @@ export const ck3Adapter: GameAdapter = {
   }),
   buildDescriptor: (modName) => `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${modName}"\n`,
   buildOuterModPointer: (modName, modRootAbsolutePath) => ({
-    fileName: `${modName.toLowerCase().replace(/\s+/g, "-")}.mod`,
+    fileName: `${modFolderName(modName)}.mod`,
     content: `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${modName}"\nsupported_version="1.*"\npath="${toUnixPath(modRootAbsolutePath)}"\n`,
   }),
 };

@@ -9,7 +9,7 @@ export interface ExportPreflight {
 }
 
 export type ExportOutcome =
-  | { status: "ok"; stringsWritten: number; filesWritten: number; destPath: string }
+  | { status: "ok"; stringsWritten: number; filesWritten: number; destPath: string; unmapped: number }
   | { status: "cancelled" }
   | { status: "error"; error: string };
 
@@ -35,16 +35,21 @@ export default function ExportSummary({
   onClose,
 }: Props) {
   const [phase, setPhase] = useState<Phase>("preflight");
-  const [result, setResult] = useState<{ stringsWritten: number; filesWritten: number; destPath: string } | null>(
-    null
-  );
+  const [result, setResult] = useState
+    <{ stringsWritten: number; filesWritten: number; destPath: string; unmapped: number } | null
+  >(null);
   const [error, setError] = useState("");
 
   async function handleProceed() {
     setPhase("progress");
     const outcome = await onProceed();
     if (outcome.status === "ok") {
-      setResult({ stringsWritten: outcome.stringsWritten, filesWritten: outcome.filesWritten, destPath: outcome.destPath });
+      setResult({
+        stringsWritten: outcome.stringsWritten,
+        filesWritten: outcome.filesWritten,
+        destPath: outcome.destPath,
+        unmapped: outcome.unmapped,
+      });
       setPhase("success");
     } else if (outcome.status === "cancelled") {
       onClose();
@@ -136,6 +141,13 @@ export default function ExportSummary({
               <p style={{ color: "var(--status-ai-draft)", fontSize: "0.85rem" }}>
                 ⚠ {preflight.outdated.toLocaleString()} of the exported strings were confirmed before a source-text
                 change — worth a review pass.
+              </p>
+            )}
+
+            {result.unmapped > 0 && (
+              <p style={{ color: "var(--status-ai-draft)", fontSize: "0.85rem" }}>
+                ⚠ {result.unmapped.toLocaleString()} confirmed string(s) had no matching game file to export into,
+                so they were skipped.
               </p>
             )}
 

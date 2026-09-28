@@ -15,7 +15,7 @@ const STEAM_FOLDER_NAMES: Record<string, string> = {
   ck3: "Crusader Kings III",
   victoria3: "Victoria 3",
   stellaris: "Stellaris",
-  imperator: "Imperator Rome",
+  imperator: "ImperatorRome", // note: no space, unlike the game's display name
   hoi4: "Hearts of Iron IV",
 };
 
@@ -240,7 +240,8 @@ export default function NewProjectWizard({ recentProjects, onProjectSelected }: 
     );
 
     if (providerId && providerId !== "ollama" && (apiKeyInput.trim() || baseUrl.trim())) {
-      await setProviderCredentials(providerId, apiKeyInput.trim() || null, baseUrl.trim() || null);
+      // A blank key box means "keep any saved key" (undefined), never "delete it".
+      await setProviderCredentials(providerId, apiKeyInput.trim() || undefined, baseUrl.trim() || null);
     }
 
     const inserted = (await db.select(

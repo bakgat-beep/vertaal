@@ -15,6 +15,9 @@ export interface EditorRow {
   // The complete source text this translation was made against; compared with
   // source_text to detect that the game's text changed (see sourceChange.ts).
   source_text_at_translation: string | null;
+  // Set when the last import that rescanned this string's file no longer
+  // found it there (most often a game patch). NULL means it's still present.
+  removed_at?: string | null;
 }
 export interface Project {
   id: number;

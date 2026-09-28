@@ -127,6 +127,12 @@ pub fn run() {
             sql: include_str!("../migrations/0020_compact_change_tracking.sql"),
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
+        tauri_plugin_sql::Migration {
+            version: 21,
+            description: "track_removed_strings",
+            sql: include_str!("../migrations/0021_track_removed_strings.sql"),
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -139,6 +145,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![greet])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
