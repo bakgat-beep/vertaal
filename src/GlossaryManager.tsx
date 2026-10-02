@@ -12,6 +12,8 @@ import {
   effectiveStatus,
   type GlossaryRow,
 } from "./glossary";
+import { confirm } from "./confirm";
+import { useEscapeKey } from "./hooks/useEscapeKey";
 
 interface Props {
   gameId: string;
@@ -42,6 +44,7 @@ export default function GlossaryManager({
   providerName,
   providerSupportsGlossary = true,
 }: Props) {
+  useEscapeKey(onClose);
   const scopeWord = isModProject ? "mod" : "game";
   const [terms, setTerms] = useState<GlossaryRow[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -125,7 +128,7 @@ export default function GlossaryManager({
   }
 
   async function handleBulkDelete() {
-    if (!window.confirm(`Delete ${selectedIds.size} selected term(s)? This can't be undone.`)) return;
+    if (!(await confirm(`Delete ${selectedIds.size} selected term(s)? This can't be undone.`, { confirmLabel: "Delete", destructive: true }))) return;
     for (const id of selectedIds) {
       await deleteGlossaryTerm(id);
     }
@@ -189,7 +192,7 @@ export default function GlossaryManager({
 
   async function handleDelete() {
     if (selected === "new" || !selected) return;
-    if (!window.confirm(`Delete "${selected.english_term}"? This can't be undone.`)) return;
+    if (!(await confirm(`Delete "${selected.english_term}"? This can't be undone.`, { confirmLabel: "Delete", destructive: true }))) return;
     await deleteGlossaryTerm(selected.id);
     setListMessage(`Deleted "${selected.english_term}".`);
     closePanel();
@@ -284,7 +287,7 @@ export default function GlossaryManager({
   const selectedUsage = selected !== "new" && selected ? usageCounts[selected.id] : undefined;
 
   return (
-    <div className="welcome-overlay">
+    <div className="welcome-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="welcome-window" style={{ width: "980px" }}>
         <div className="welcome-title">
           <h1 style={{ marginBottom: 0 }}>Glossary</h1>

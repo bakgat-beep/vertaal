@@ -6,6 +6,7 @@ import { translateWithRetry } from "../translate";
 import { loadGlossaryTerms } from "../glossary";
 import { isCodeOnly, isBlank, needsNoTranslation, shouldConfirmAsIs } from "../codeOnly";
 import { backupDatabase } from "../backup";
+import { confirm } from "../confirm";
 
 interface UseBatchTranslationParams {
   currentProject: Project | null;
@@ -148,7 +149,7 @@ export function useBatchTranslation({
       return;
     }
 
-    const proceed = window.confirm(
+    const proceed = await confirm(
       `Found ${matches.length} string(s) ${describe}. Confirm them all exactly as they are (the original text becomes the confirmed translation)?`
     );
     if (!proceed) return;

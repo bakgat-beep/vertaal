@@ -20,16 +20,37 @@ const STEAM_FOLDER_NAMES: Record<string, string> = {
 };
 
 interface Props {
-  // Only used for duplicate-project detection (same game + target language
-  // already exists) — the full RecentProject shape from WelcomeScreen isn't
-  // needed here, plain Project is enough.
-  recentProjects: Project[];
   onProjectSelected: (project: Project) => void;
 }
 
 // Turns "brazilian portuguese" into "Brazilian Portuguese" for display.
 function titleCase(s: string): string {
   return s.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// What to tell the person when the project they're about to create already
+// exists (same finalGameId + target language) — pulled out as a small, pure
+// function so the two distinct cases it has to explain are easy to verify on
+// their own: an ordinary repeat (same mod, or a vanilla project, already
+// started), versus two DIFFERENTLY named mods whose names happen to produce
+// the same internal identifier and would otherwise silently share one
+// game's worth of strings.
+export function describeDuplicateProject(
+  existing: { source_mod_name: string | null; hidden_from_recent: number },
+  isMod: boolean,
+  sourceModName: string,
+  effectiveTargetLanguage: string,
+  gameDisplayName: string
+): string {
+  const sameMod = !isMod || (existing.source_mod_name ?? "").trim().toLowerCase() === sourceModName.trim().toLowerCase();
+  const hiddenNote = existing.hidden_from_recent ? " (it was hidden from the project list)" : "";
+  return sameMod
+    ? `A ${titleCase(effectiveTargetLanguage)} project for ${isMod ? sourceModName : gameDisplayName} ` +
+        `already exists${hiddenNote}. Opening it instead of creating a duplicate, since a second one would share ` +
+        `the same translation data behind the scenes.`
+    : `"${sourceModName}" and the existing "${existing.source_mod_name}" produce the same internal identifier, ` +
+        `so they would share translation data if both existed${hiddenNote}. Opening the existing project instead — ` +
+        `rename one of the mods if they're meant to be different.`;
 }
 
 // A broad, commonly-useful set of target languages — covers most of what
@@ -56,7 +77,7 @@ const TARGET_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
   { value: "xhosa", label: "Xhosa" },
 ];
 
-export default function NewProjectWizard({ recentProjects, onProjectSelected }: Props) {
+export default function NewProjectWizard({ onProjectSelected }: Props) {
   const [projectType, setProjectType] = useState<"vanilla" | "mod">("vanilla");
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [sourceLanguage, setSourceLanguage] = useState("english");
@@ -191,29 +212,32 @@ export default function NewProjectWizard({ recentProjects, onProjectSelected }: 
   async function handleCreateProject() {
     if (!canCreate || !selectedGameId) return;
 
-    if (projectType === "vanilla") {
-      const existing = recentProjects.find(
-        (p) =>
-          p.project_type === "vanilla" &&
-          p.game_id === selectedGameId &&
-          p.target_language === effectiveTargetLanguage
+    const isMod = projectType === "mod";
+    const finalGameId = isMod ? `${selectedGameId}:mod:${slugifyModName(sourceModName)}` : selectedGameId;
+    const db = await getDb();
+
+    // Checked directly against the database by the exact identifier this
+    // project would use, not against the Hub's recent-projects list — that
+    // list leaves out hidden projects, which are just as capable of quietly
+    // sharing translation data with a new one. This also catches the mod
+    // case the old check skipped entirely: two differently-named mods whose
+    // names happen to produce the SAME slug (finalGameId) would otherwise
+    // silently share one game's worth of strings.
+    const existingRows = (await db.select(
+      "SELECT * FROM projects WHERE game_id = $1 AND target_language = $2 ORDER BY id DESC LIMIT 1",
+      [finalGameId, effectiveTargetLanguage]
+    )) as Project[];
+    const existing = existingRows[0];
+
+    if (existing) {
+      setDuplicateProjectNotice(
+        describeDuplicateProject(existing, isMod, sourceModName, effectiveTargetLanguage, GAME_ADAPTERS[selectedGameId].displayName)
       );
-      if (existing) {
-        setDuplicateProjectNotice(
-          `A ${titleCase(effectiveTargetLanguage)} project for ${GAME_ADAPTERS[selectedGameId].displayName} ` +
-            `already exists. Opening it instead of creating a duplicate, since a second one would share the ` +
-            `same translation data behind the scenes.`
-        );
-        onProjectSelected(existing);
-        return;
-      }
+      onProjectSelected(existing);
+      return;
     }
     setDuplicateProjectNotice("");
 
-    const db = await getDb();
-
-    const isMod = projectType === "mod";
-    const finalGameId = isMod ? `${selectedGameId}:mod:${slugifyModName(sourceModName)}` : selectedGameId;
     const finalModName =
       modName.trim() ||
       (isMod ? `${sourceModName} — ${effectiveTargetLanguage} Translation` : `${effectiveTargetLanguage} Translation`);

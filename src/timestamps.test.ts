@@ -3,17 +3,24 @@ import { formatLocalTimestamp, isAtLeastAsNew } from "./timestamps";
 
 describe("formatLocalTimestamp", () => {
   it("treats SQLite's bare datetime('now') format as UTC, not local time", () => {
-    // Independent of the machine running the test's own timezone: a UTC
-    // instant converted to local and back to UTC round-trips exactly.
-    const result = formatLocalTimestamp("2026-01-15 12:00:00");
-    const parsedBack = new Date(result);
-    expect(parsedBack.getTime()).toBe(new Date("2026-01-15T12:00:00Z").getTime());
+    // toLocaleString()'s exact output (date order, 12/24-hour, separators)
+    // depends on the machine's own locale, and isn't reliably re-parseable
+    // by `new Date()` — for example en-NZ renders it as "16/01/2026, 1:00:00
+    // am", which `new Date()` cannot read back. So rather than round-trip
+    // through the display string, compare two spellings of the SAME UTC
+    // instant: if the bare format were wrongly parsed as LOCAL time instead
+    // of UTC, these would render differently (off by the local UTC offset).
+    // Locale-independent either way.
+    expect(formatLocalTimestamp("2026-01-15 12:00:00")).toBe(formatLocalTimestamp("2026-01-15T12:00:00.000Z"));
   });
 
-  it("also handles an already-ISO timestamp (from a merged/imported file) the same way", () => {
-    const result = formatLocalTimestamp("2026-01-15T12:00:00.000Z");
-    const parsedBack = new Date(result);
-    expect(parsedBack.getTime()).toBe(new Date("2026-01-15T12:00:00Z").getTime());
+  it("actually parses and formats the timestamp, rather than just returning it unchanged", () => {
+    // Guards against the comparison above passing "by accident" — e.g. if
+    // both sides hit the invalid-date fallback and returned their (still
+    // different) raw inputs, they'd correctly NOT be equal, but for the
+    // wrong reason. This confirms the bare-format input really did get
+    // parsed and reformatted, not passed through as-is.
+    expect(formatLocalTimestamp("2026-01-15 12:00:00")).not.toBe("2026-01-15 12:00:00");
   });
 
   it("falls back to the raw text for something unparseable, rather than showing 'Invalid Date'", () => {

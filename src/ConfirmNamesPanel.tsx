@@ -6,6 +6,8 @@ import {
   confirmNameMatches,
   type SourceFileOption,
 } from "./nameConfirm";
+import { confirm } from "./confirm";
+import { useEscapeKey } from "./hooks/useEscapeKey";
 
 interface Props {
   gameId: string;
@@ -27,6 +29,7 @@ function shortFileName(filePath: string): string {
 }
 
 export default function ConfirmNamesPanel({ gameId, targetLanguage, translatedBy, onConfirmed, onClose }: Props) {
+  useEscapeKey(onClose);
   const [fileOptions, setFileOptions] = useState<SourceFileOption[]>([]);
   const [filesLoaded, setFilesLoaded] = useState(false);
 
@@ -74,7 +77,7 @@ export default function ConfirmNamesPanel({ gameId, targetLanguage, translatedBy
   }
 
   async function handleConfirm() {
-    const proceed = window.confirm(
+    const proceed = await confirm(
       `Confirm ${matchCount.toLocaleString()} string(s) matching this selection, using their source text exactly as-is? This cannot be bulk-undone.`
     );
     if (!proceed) return;
@@ -99,7 +102,7 @@ export default function ConfirmNamesPanel({ gameId, targetLanguage, translatedBy
   const hasSelection = keyPatterns.length > 0 || selectedFiles.size > 0;
 
   return (
-    <div className="welcome-overlay">
+    <div className="welcome-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="welcome-window" style={{ width: "760px" }}>
         <div className="welcome-title">
           <h1 style={{ marginBottom: 0 }}>Confirm Names/Locations As-Is</h1>

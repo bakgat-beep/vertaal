@@ -8,6 +8,7 @@ import { exportPortableProjectData } from "./portableExport";
 import { importAllContributorFiles, type CombinedMergeSummary } from "./mergeImport";
 import { getDb } from "./db";
 import { portableExportFileName } from "./fileNames";
+import { useEscapeKey } from "./hooks/useEscapeKey";
 
 interface Props {
   project: Project;
@@ -26,6 +27,10 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
   const [busy, setBusy] = useState(false);
   const [gitAvailable, setGitAvailable] = useState<string | null | "checking">("checking");
   const [contributorName, setContributorNameState] = useState<string | null>(null);
+
+  // Not while a sync/pull is actually running — closing partway through a
+  // Git operation would leave you unsure whether it finished.
+  useEscapeKey(onClose, !busy);
 
   useEffect(() => {
     getGithubToken().then((t) => setHasToken(!!t));
@@ -102,7 +107,10 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
       await setGithubToken(tokenInput.trim());
       setTokenInput("");
       setHasToken(true);
-      setOutput("✓ Token saved (encrypted locally).");
+      setOutput(
+        "✓ Token saved. It's obscured in the local database, not strongly secured — " +
+          "anyone with access to this computer and Vertaal's own source code could still recover it."
+      );
     } catch (err) {
       setOutput(`Token save failed: ${err}`);
     }
@@ -181,7 +189,7 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
   }
 
   return (
-    <div className="welcome-overlay">
+    <div className="welcome-overlay" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
       <div className="welcome-window" style={{ width: "700px" }}>
         <div className="welcome-title">
           <h1 style={{ marginBottom: 0 }}>Collaboration</h1>

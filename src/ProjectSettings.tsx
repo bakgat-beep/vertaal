@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { Project } from "./types";
 import { TRANSLATION_PROVIDERS, NO_AI_PROVIDER_ID, providerOptionLabel } from "./providers";
+import { useEscapeKey } from "./hooks/useEscapeKey";
 import { getProviderCredentials, setProviderCredentials } from "./providers/credentials";
 import { getDb } from "./db";
 import { GAME_ADAPTERS } from "./games";
@@ -12,6 +13,7 @@ interface Props {
 }
 
 export default function ProjectSettings({ project, onProjectUpdated, onClose }: Props) {
+  useEscapeKey(onClose);
   const [modName, setModName] = useState(project.mod_name);
   const [showInRecent, setShowInRecent] = useState(project.hidden_from_recent !== 1);
   const [providerId, setProviderId] = useState(project.translation_provider_id ?? "ollama");
@@ -102,7 +104,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
   }
 
   return (
-    <div className="welcome-overlay">
+    <div className="welcome-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="welcome-window" style={{ width: "600px" }}>
         <div className="welcome-title">
           <h1 style={{ marginBottom: 0 }}>Project Settings</h1>

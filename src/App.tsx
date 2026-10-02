@@ -34,6 +34,9 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import ExportSummary, { type ExportPreflight, type ExportOutcome } from "./ExportSummary";
 import { verifyConfirmedStrings } from "./verifyConfirmed";
 import { formatLocalTimestamp } from "./timestamps";
+import { confirm } from "./confirm";
+import { useEscapeKey } from "./hooks/useEscapeKey";
+import { useClickOutside } from "./hooks/useClickOutside";
 
 export type ViewMode = "all" | "untranslated" | "translated" | "draft" | "outdated" | "issues" | "flagged" | "search" | "category" | "subcategory";
 
@@ -60,7 +63,14 @@ function App() {
 
   const [selectedRow, setSelectedRow] = useState<EditorRow | null>(null);
 
-  const [contributorName, setContributorNameState] = useState<string | null>(null);
+  // undefined = still loading (the very first render, before the saved name
+  // comes back); null = loaded, and genuinely nothing saved yet (show the
+  // prompt); a string = loaded, name already known. Without the three-way
+  // distinction, the prompt screen flashed on every launch — the saved name
+  // comes back almost immediately, but not before that first render, so
+  // treating "not loaded yet" the same as "no name saved" showed the prompt
+  // for a frame even for a returning user.
+  const [contributorName, setContributorNameState] = useState<string | null | undefined>(undefined);
   const [nameInput, setNameInput] = useState("");
 
   const {
@@ -96,7 +106,7 @@ function App() {
     flushWrites,
   } = useEditorRows({
     currentProject,
-    contributorName,
+    contributorName: contributorName ?? null, // "still loading" treated as "not yet known" here; the app shows nothing else until it resolves
     selectedRow,
     setSelectedRow,
     loadCategories,
@@ -139,6 +149,9 @@ function App() {
     listRef.current?.scrollTo({ top: 0 });
   }, [viewMode, offset, categoryFilter, subcategoryFilter, viewMode === "search" ? searchTerm : ""]);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  useClickOutside(moreMenuRef, () => setMoreMenuOpen(false), moreMenuOpen);
+  useEscapeKey(() => setMoreMenuOpen(false), moreMenuOpen);
   const [showAppSettings, setShowAppSettings] = useState(false);
   // False until the project's string counts have been read, so the "nothing
   // imported yet" message can't flash up while they are still loading.
@@ -357,9 +370,10 @@ function App() {
     const boxText = (drafts[row.key] ?? row.translated_text ?? "").trim();
     const isUntouchedAiDraft = row.status === "ai-suggested" && boxText === (row.translated_text ?? "").trim();
     if (boxText !== "" && !isUntouchedAiDraft) {
-      const proceed = window.confirm(
+      const proceed = await confirm(
         "This string already has your own translation. Replace it with a new AI draft?\n\n" +
-          "The current text is kept in this string's History, so you can restore it."
+          "The current text is kept in this string's History, so you can restore it.",
+        { confirmLabel: "Replace" }
       );
       if (!proceed) return;
     }
@@ -387,7 +401,7 @@ function App() {
       setStatus("Nothing to confirm on this page.");
       return;
     }
-    const proceed = window.confirm(
+    const proceed = await confirm(
       `Confirm all ${targets.length} string(s) on this page? Any row with no translation yet will be confirmed using its original source text as-is.`
     );
     if (!proceed) return;
@@ -460,6 +474,10 @@ function App() {
     const explicitLines = (text.match(/\n/g) ?? []).length + 1;
     const wrapLines = Math.ceil(text.length / 55);
     return Math.min(16, Math.max(4, Math.max(explicitLines, wrapLines) + 1));
+  }
+
+    if (contributorName === undefined) {
+    return null; // still loading the saved name — avoid a flash of the prompt below
   }
 
     if (contributorName === null) {
@@ -636,7 +654,7 @@ function App() {
 
         <div className="toolbar-spacer" />
 
-        <div className="more-menu">
+        <div className="more-menu" ref={moreMenuRef}>
           <button onClick={() => setMoreMenuOpen((v) => !v)} title="Less-frequent actions: AI batches, importing game files, sharing, backups, app settings">
             More actions ▾
           </button>

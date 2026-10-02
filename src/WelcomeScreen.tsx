@@ -262,7 +262,7 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
                   localisation files for you, keeps protected tokens intact, and tracks your progress as you go.
                   Create your first project below to get started.
                 </p>
-                <NewProjectWizard recentProjects={recentProjects} onProjectSelected={onProjectSelected} />
+                <NewProjectWizard onProjectSelected={onProjectSelected} />
               </>
             )}
 
@@ -295,7 +295,7 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
               ← Back to Projects
             </button>
             <h2 className="welcome-heading">Create a project</h2>
-            <NewProjectWizard recentProjects={recentProjects} onProjectSelected={onProjectSelected} />
+            <NewProjectWizard onProjectSelected={onProjectSelected} />
           </>
         )}
 

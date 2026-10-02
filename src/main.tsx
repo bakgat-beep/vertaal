@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { message } from "@tauri-apps/plugin-dialog";
 import App from "./App";
+import ConfirmDialogHost from "./ConfirmDialogHost";
 import { applyPendingRestore } from "./backup";
 
 async function start() {
@@ -25,6 +26,7 @@ async function start() {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <App />
+      <ConfirmDialogHost />
     </React.StrictMode>,
   );
 

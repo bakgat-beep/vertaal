@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { useEscapeKey } from "./hooks/useEscapeKey";
 
 export interface ExportPreflight {
   total: number;
@@ -40,6 +41,10 @@ export default function ExportSummary({
   >(null);
   const [error, setError] = useState("");
 
+  // Not while the export is actually running — closing partway through would
+  // leave you unsure whether it finished.
+  useEscapeKey(onClose, phase !== "progress");
+
   async function handleProceed() {
     setPhase("progress");
     const outcome = await onProceed();
@@ -70,7 +75,7 @@ export default function ExportSummary({
   const coveragePct = preflight.total > 0 ? Math.round((preflight.confirmed / preflight.total) * 100) : 0;
 
   return (
-    <div className="welcome-overlay">
+    <div className="welcome-overlay" onClick={(e) => { if (e.target === e.currentTarget && phase !== "progress") onClose(); }}>
       <div className="welcome-window" style={{ width: "520px" }}>
         {phase === "preflight" && (
           <>

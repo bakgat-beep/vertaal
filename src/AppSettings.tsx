@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { setContributorName } from "./settings";
+import { useEscapeKey } from "./hooks/useEscapeKey";
 
 interface Props {
   contributorName: string;
@@ -14,6 +15,8 @@ export default function AppSettings({ contributorName, onSaved, onClose }: Props
   const [name, setName] = useState(contributorName);
   const [message, setMessage] = useState("");
 
+  useEscapeKey(onClose);
+
   async function handleSave() {
     const trimmed = name.trim();
     if (!trimmed) {
@@ -26,7 +29,7 @@ export default function AppSettings({ contributorName, onSaved, onClose }: Props
   }
 
   return (
-    <div className="welcome-overlay">
+    <div className="welcome-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="welcome-window" style={{ width: "560px" }}>
         <div className="welcome-title">
           <h1 style={{ marginBottom: 0 }}>App Settings</h1>
