@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from "vitest";
 // needed by the loaders, so it's replaced with an empty stand-in here.
 vi.mock("./db", () => ({ getDb: vi.fn() }));
 
-import { matchGlossaryTerms, buildGlossaryInstructions, type GlossaryTerm } from "./glossary";
+import { matchGlossaryTerms, buildGlossaryInstructions, findDuplicateTerm, parseBulkGlossaryText, type GlossaryTerm, } from "./glossary";
 
 let nextId = 1;
 const term = (
@@ -114,5 +114,76 @@ describe("buildGlossaryInstructions", () => {
     const src = "Sign the peace treaty.";
     const lines = buildGlossaryInstructions(src, matchGlossaryTerms(src, [term("peace treaty", "")]));
     expect(lines).toEqual([]);
+  });
+});
+
+
+describe("findDuplicateTerm", () => {
+  const existing = [
+    { id: 1, english_term: "Peace Treaty", game_id: "eu5" },
+    { id: 2, english_term: "war", game_id: null },
+  ];
+
+  it("finds the same English word ignoring capitals and surrounding spaces", () => {
+    expect(findDuplicateTerm(existing, "  peace treaty ", "eu5")?.id).toBe(1);
+  });
+
+  it("does not count the same word in a different scope (a game may override a shared term)", () => {
+    expect(findDuplicateTerm(existing, "war", "eu5")).toBeUndefined();
+    expect(findDuplicateTerm(existing, "war", null)?.id).toBe(2);
+  });
+
+  it("ignores the term currently being edited, so saving it unchanged is fine", () => {
+    expect(findDuplicateTerm(existing, "Peace Treaty", "eu5", 1)).toBeUndefined();
+  });
+
+  it("flags renaming a term onto a word another term already uses", () => {
+    expect(findDuplicateTerm(existing, "peace treaty", "eu5", 99)?.id).toBe(1);
+  });
+
+  it("never reports a blank word as a duplicate", () => {
+    expect(findDuplicateTerm(existing, "   ", "eu5")).toBeUndefined();
+  });
+});
+
+describe("parseBulkGlossaryText", () => {
+  it("reads tab-separated pairs and ignores # headers and blank lines", () => {
+    const r = parseBulkGlossaryText("# Shared terms\npeace\tvrede\n\npeace treaty\tvredesverdrag");
+    expect(r.pairs).toEqual([
+      { english: "peace", translated: "vrede" },
+      { english: "peace treaty", translated: "vredesverdrag" },
+    ]);
+    expect(r.skipped).toEqual([]);
+  });
+
+  it("keeps commas inside a translation instead of cutting it short", () => {
+    const r = parseBulkGlossaryText("peace\tvrede, rus");
+    expect(r.pairs).toEqual([{ english: "peace", translated: "vrede, rus" }]);
+  });
+
+  it("reports a comma-separated line as skipped rather than guessing where to split it", () => {
+    const r = parseBulkGlossaryText("peace,vrede");
+    expect(r.pairs).toEqual([]);
+    expect(r.skipped).toHaveLength(1);
+    expect(r.skipped[0]).toMatchObject({ lineNumber: 1, reason: expect.stringContaining("tab") });
+  });
+
+  it("reports lines with an empty English or translation column", () => {
+    const r = parseBulkGlossaryText("\tvrede\npeace\t  ");
+    expect(r.skipped.map((x) => x.lineNumber)).toEqual([1, 2]);
+  });
+
+  it("uses only the first two columns of a wider spreadsheet row", () => {
+    expect(parseBulkGlossaryText("war\toorlog\tsome note").pairs).toEqual([{ english: "war", translated: "oorlog" }]);
+  });
+
+  it("collapses a repeated English word within one paste (last wins) and counts it", () => {
+    const r = parseBulkGlossaryText("war\toorlog\nWar\tkrygvoering");
+    expect(r.pairs).toEqual([{ english: "War", translated: "krygvoering" }]);
+    expect(r.repeated).toBe(1);
+  });
+
+  it("copes with Windows line endings", () => {
+    expect(parseBulkGlossaryText("war\toorlog\r\npeace\tvrede\r\n").pairs).toHaveLength(2);
   });
 });

@@ -5,6 +5,8 @@ import { useEscapeKey } from "./hooks/useEscapeKey";
 import { getProviderCredentials, setProviderCredentials } from "./providers/credentials";
 import { getDb } from "./db";
 import { GAME_ADAPTERS } from "./games";
+import { initialModelMemory, modelFor, withModel, modelToSave } from "./providerModel";
+import ProviderTestButton from "./ProviderTestButton";
 
 interface Props {
   project: Project;
@@ -17,7 +19,13 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
   const [modName, setModName] = useState(project.mod_name);
   const [showInRecent, setShowInRecent] = useState(project.hidden_from_recent !== 1);
   const [providerId, setProviderId] = useState(project.translation_provider_id ?? "ollama");
-  const [model, setModel] = useState(project.ai_model ?? "");
+  // One remembered model name per provider, so switching provider never keeps
+  // the previous provider's name (see providerModel.ts).
+  const [modelMemory, setModelMemory] = useState(() =>
+    initialModelMemory(project.translation_provider_id ?? "ollama", project.ai_model)
+  );
+  const model = modelFor(modelMemory, providerId);
+  const setModel = (value: string) => setModelMemory((m) => withModel(m, providerId, value));
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -61,6 +69,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
       return;
     }
 
+    const modelToStore = modelToSave(providerId, modelMemory, NO_AI_PROVIDER_ID);
     const trimmedSourceOverride = sourceLangOverride.trim() || null;
     const trimmedTargetOverride = targetLangOverride.trim() || null;
 
@@ -74,7 +83,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
              google_translate_delay_ms = $5, source_language_code_override = $6, target_language_code_override = $7,
              hidden_from_recent = $8
          WHERE id = $9`,
-        [modName, providerId, model || null, parsedRetryDelay, parsedGoogleDelay, trimmedSourceOverride, trimmedTargetOverride, hiddenFromRecent, project.id]
+        [modName, providerId, modelToStore, parsedRetryDelay, parsedGoogleDelay, trimmedSourceOverride, trimmedTargetOverride, hiddenFromRecent, project.id]
       );
 
       if (!isManual && provider && !provider.isLocal) {
@@ -90,7 +99,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
         ...project,
         mod_name: modName,
         translation_provider_id: providerId,
-        ai_model: model || null,
+        ai_model: modelToStore,
         retry_delay_ms: parsedRetryDelay,
         google_translate_delay_ms: parsedGoogleDelay,
         source_language_code_override: trimmedSourceOverride,
@@ -171,6 +180,11 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           />
         </div>
         )}
+        {!isManual && provider?.requiresModel && !model.trim() && (
+          <p style={{ fontSize: "0.8rem", color: "var(--status-ai-draft)", marginTop: "-0.5rem" }}>
+            {provider.displayName} needs a model name before it can translate — enter one above.
+          </p>
+        )}
 
         {!isManual && provider && !provider.isLocal && (
           <>
@@ -207,6 +221,25 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           <p style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
             Note: {provider.displayName} does not apply your glossary rules automatically.
           </p>
+        )}
+
+        {!isManual && provider && (
+          <ProviderTestButton
+            providerId={providerId}
+            sourceLanguage={sourceLangOverride.trim() || project.source_language}
+            targetLanguage={targetLangOverride.trim() || project.target_language}
+            settingsFingerprint={JSON.stringify([model, apiKeyInput, baseUrl, sourceLangOverride, targetLangOverride])}
+            getConfig={async () => {
+              // Use what's typed on screen; a blank key box means "use the saved key".
+              const saved = await getProviderCredentials(providerId);
+              return {
+                providerId,
+                model: model.trim() || null,
+                apiKey: apiKeyInput.trim() || saved.apiKey,
+                baseUrl: baseUrl.trim() || null,
+              };
+            }}
+          />
         )}
 
         {!isManual && (

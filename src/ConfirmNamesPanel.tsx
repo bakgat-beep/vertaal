@@ -3,6 +3,7 @@ import {
   listSourceFileOptions,
   splitKeyPatterns,
   countNameConfirmMatches,
+  countAiDraftMatches,
   confirmNameMatches,
   type SourceFileOption,
 } from "./nameConfirm";
@@ -37,17 +38,29 @@ export default function ConfirmNamesPanel({ gameId, targetLanguage, translatedBy
   const [keyPatterns, setKeyPatterns] = useState<string[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
 
+  // Off by default: strings that already hold an AI suggestion are left alone
+  // unless the person ticks this (see nameConfirm.ts).
+  const [includeAiDrafts, setIncludeAiDrafts] = useState(false);
   const [matchCount, setMatchCount] = useState(0);
+  // Of the strings matching the current selection, how many hold an AI draft.
+  const [aiDraftMatchCount, setAiDraftMatchCount] = useState(0);
   const [counting, setCounting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [resultMessage, setResultMessage] = useState("");
 
   useEffect(() => {
-    listSourceFileOptions(gameId, targetLanguage).then((rows) => {
+    let cancelled = false;
+    listSourceFileOptions(gameId, targetLanguage, includeAiDrafts).then((rows) => {
+      if (cancelled) return;
       setFileOptions(rows);
       setFilesLoaded(true);
+      // A ticked file that no longer has anything eligible has left the list.
+      setSelectedFiles((prev) => new Set(Array.from(prev).filter((p) => rows.some((r) => r.file_path === p))));
     });
-  }, [gameId, targetLanguage]);
+    return () => {
+      cancelled = true;
+    };
+  }, [gameId, targetLanguage, includeAiDrafts]);
 
   // Debounce the key-pattern text box so every keystroke doesn't trigger a
   // count query — same 300ms approach the Glossary search box uses.
@@ -59,13 +72,24 @@ export default function ConfirmNamesPanel({ gameId, targetLanguage, translatedBy
   }, [keyPatternInput]);
 
   useEffect(() => {
+    // `cancelled` stops a slow, out-of-date count from overwriting a newer one
+    // when the selection changes quickly.
+    let cancelled = false;
     setCounting(true);
     setResultMessage("");
-    countNameConfirmMatches(gameId, targetLanguage, keyPatterns, Array.from(selectedFiles)).then((count) => {
+    Promise.all([
+      countNameConfirmMatches(gameId, targetLanguage, keyPatterns, Array.from(selectedFiles), includeAiDrafts),
+      countAiDraftMatches(gameId, targetLanguage, keyPatterns, Array.from(selectedFiles)),
+    ]).then(([count, aiCount]) => {
+      if (cancelled) return;
       setMatchCount(count);
+      setAiDraftMatchCount(aiCount);
       setCounting(false);
     });
-  }, [gameId, targetLanguage, keyPatterns, selectedFiles]);
+    return () => {
+      cancelled = true;
+    };
+  }, [gameId, targetLanguage, keyPatterns, selectedFiles, includeAiDrafts]);
 
   function toggleFile(filePath: string) {
     setSelectedFiles((prev) => {
@@ -77,25 +101,41 @@ export default function ConfirmNamesPanel({ gameId, targetLanguage, translatedBy
   }
 
   async function handleConfirm() {
+    const aiNote =
+      includeAiDrafts && aiDraftMatchCount > 0
+        ? ` ${aiDraftMatchCount.toLocaleString()} of them currently hold an AI draft, which will be replaced (the old AI text is kept in History).`
+        : "";
     const proceed = await confirm(
-      `Confirm ${matchCount.toLocaleString()} string(s) matching this selection, using their source text exactly as-is? This cannot be bulk-undone.`
+      `Confirm ${matchCount.toLocaleString()} string(s) matching this selection, using their source text exactly as-is?${aiNote} This cannot be bulk-undone.`
     );
     if (!proceed) return;
 
     setConfirming(true);
-    const confirmedCount = await confirmNameMatches(gameId, targetLanguage, keyPatterns, Array.from(selectedFiles), translatedBy);
+    const { confirmed: confirmedCount, aiDraftsReplaced } = await confirmNameMatches(
+      gameId,
+      targetLanguage,
+      keyPatterns,
+      Array.from(selectedFiles),
+      translatedBy,
+      includeAiDrafts
+    );
 
     // These rows are no longer "untouched," so refresh the file checklist
     // (counts drop, files that hit zero disappear) and re-run the preview
     // count for the current selection.
-    const [freshFileOptions, freshCount] = await Promise.all([
-      listSourceFileOptions(gameId, targetLanguage),
-      countNameConfirmMatches(gameId, targetLanguage, keyPatterns, Array.from(selectedFiles)),
+    const [freshFileOptions, freshCount, freshAiCount] = await Promise.all([
+      listSourceFileOptions(gameId, targetLanguage, includeAiDrafts),
+      countNameConfirmMatches(gameId, targetLanguage, keyPatterns, Array.from(selectedFiles), includeAiDrafts),
+      countAiDraftMatches(gameId, targetLanguage, keyPatterns, Array.from(selectedFiles)),
     ]);
     setFileOptions(freshFileOptions);
     setMatchCount(freshCount);
+    setAiDraftMatchCount(freshAiCount);
     setConfirming(false);
-    setResultMessage(`Confirmed ${confirmedCount.toLocaleString()} string(s).`);
+    setResultMessage(
+      `Confirmed ${confirmedCount.toLocaleString()} string(s)` +
+        (aiDraftsReplaced > 0 ? `, replacing ${aiDraftsReplaced.toLocaleString()} AI draft(s) (see History for the old text).` : ".")
+    );
     onConfirmed();
   }
 
@@ -109,8 +149,9 @@ export default function ConfirmNamesPanel({ gameId, targetLanguage, translatedBy
           <p style={{ color: "var(--text-dim)" }}>
             For strings the game re-localizes dynamically by language/culture — names of people, countries,
             locations — where the source text should be kept exactly as-is rather than translated. Select by
-            key/name pattern, by source file, or both. Only untouched, unflagged strings are ever affected —
-            anything already drafted or confirmed is skipped.
+            key/name pattern, by source file, or both. Only unflagged strings with no translation yet are affected
+            (plus strings holding an AI draft, if you tick the box below). Your own drafts, confirmed strings and
+            flagged strings are always skipped.
           </p>
         </div>
 
@@ -130,12 +171,29 @@ export default function ConfirmNamesPanel({ gameId, targetLanguage, translatedBy
         </div>
 
         <div className="form-row" style={{ marginTop: "0.75rem" }}>
+          <label style={{ fontWeight: "normal", fontSize: "0.85rem" }}>
+            <input
+              type="checkbox"
+              checked={includeAiDrafts}
+              onChange={(e) => setIncludeAiDrafts(e.target.checked)}
+            />{" "}
+            Also include strings the AI has already drafted
+          </label>
+          <p style={{ fontSize: "0.75rem", color: "var(--text-dim)", margin: "0.25rem 0 0" }}>
+            An AI suggestion nobody has confirmed is replaced by the original text; the old suggestion stays in
+            History. Text you typed yourself is never replaced.
+          </p>
+        </div>
+
+        <div className="form-row" style={{ marginTop: "0.75rem" }}>
           <div className="form-label">Source file(s)</div>
           {!filesLoaded ? (
             <p style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>Loading files...</p>
           ) : fileOptions.length === 0 ? (
             <p style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>
-              No untouched strings remain in this project — nothing to select.
+              {includeAiDrafts
+                ? "No untouched or AI-drafted strings remain in this project — nothing to select."
+                : "No untouched strings remain in this project — nothing to select."}
             </p>
           ) : (
             <div
@@ -155,7 +213,9 @@ export default function ConfirmNamesPanel({ gameId, targetLanguage, translatedBy
                 >
                   <input type="checkbox" checked={selectedFiles.has(f.file_path)} onChange={() => toggleFile(f.file_path)} />
                   <span style={{ flexGrow: 1 }}>{f.context_label || shortFileName(f.file_path)}</span>
-                  <span style={{ color: "var(--text-dim)" }}>{f.count.toLocaleString()} untouched</span>
+                  <span style={{ color: "var(--text-dim)" }}>
+                    {f.count.toLocaleString()} {includeAiDrafts ? "untouched or AI-drafted" : "untouched"}
+                  </span>
                 </label>
               ))}
             </div>
@@ -179,7 +239,13 @@ export default function ConfirmNamesPanel({ gameId, targetLanguage, translatedBy
               ? "Enter a key pattern or select at least one file to see how many strings would match."
               : counting
               ? "Counting..."
-              : `${matchCount.toLocaleString()} untouched, unflagged string(s) currently match.`}
+              : `${matchCount.toLocaleString()} unflagged string(s) currently match${
+                  includeAiDrafts
+                    ? ` (including ${aiDraftMatchCount.toLocaleString()} with an AI draft).`
+                    : aiDraftMatchCount > 0
+                    ? `. ${aiDraftMatchCount.toLocaleString()} more match but hold an AI draft — tick the box above to include them.`
+                    : "."
+                }`}
           </span>
           <button
             className="build-mod-button"

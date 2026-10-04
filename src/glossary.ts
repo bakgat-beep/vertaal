@@ -259,6 +259,100 @@ export async function countGlossaryTermUsage(gameId: string, englishTerm: string
   return candidates.filter((c) => findTermSpans(plainText(c.source_text), term).length > 0).length;
 }
 
+// ---- Duplicate detection ----
+//
+// Two terms are "the same" when they have the same English word (ignoring
+// capital letters and surrounding spaces) in the same scope — i.e. both
+// shared, or both belonging to the same game/mod. The same word existing
+// once as shared and once as game-specific is NOT a duplicate: that is how a
+// game overrides a shared translation on purpose.
+
+export function glossaryTermKey(englishTerm: string): string {
+  return englishTerm.trim().toLowerCase();
+}
+
+export function findDuplicateTerm<T extends { id: number; english_term: string; game_id: string | null }>(
+  existing: T[],
+  englishTerm: string,
+  scopeGameId: string | null,
+  excludeId?: number
+): T | undefined {
+  const key = glossaryTermKey(englishTerm);
+  if (!key) return undefined;
+  return existing.find(
+    (t) => t.id !== excludeId && t.game_id === scopeGameId && glossaryTermKey(t.english_term) === key
+  );
+}
+
+// Looks through the WHOLE glossary for this scope (not just the page on
+// screen) for a term that would clash with the one being saved. `excludeId`
+// is the term currently being edited, so saving it unchanged isn't a clash.
+export async function findDuplicateTermInDb(
+  englishTerm: string,
+  scopeGameId: string | null,
+  targetLanguage: string,
+  excludeId?: number
+): Promise<{ id: number; english_term: string; translated_term: string } | undefined> {
+  const db = await getDb();
+  const rows = (await db.select(
+    "SELECT id, english_term, translated_term, game_id FROM glossary WHERE target_language = $1 AND game_id IS $2",
+    [targetLanguage, scopeGameId]
+  )) as { id: number; english_term: string; translated_term: string; game_id: string | null }[];
+  return findDuplicateTerm(rows, englishTerm, scopeGameId, excludeId);
+}
+
+// ---- Bulk paste parsing ----
+//
+// One term per line: English, then a TAB, then the translation (exactly what
+// you get when you copy two columns out of a spreadsheet, and what "Export
+// Whole Glossary" writes). Only a tab separates the columns — a comma can't,
+// because real translations contain commas ("vrede, rus") and would be cut
+// short. Lines starting with # are section headers from an export and are
+// ignored silently. Anything else that can't be read is reported back instead
+// of being dropped without a word.
+
+export interface BulkGlossaryParseResult {
+  pairs: { english: string; translated: string }[];
+  skipped: { lineNumber: number; text: string; reason: string }[];
+  // Pairs whose English word appeared more than once in the paste; the last
+  // one wins, so a single paste can never create two copies of the same term.
+  repeated: number;
+}
+
+export function parseBulkGlossaryText(text: string): BulkGlossaryParseResult {
+  const byKey = new Map<string, { english: string; translated: string }>();
+  const skipped: BulkGlossaryParseResult["skipped"] = [];
+  let repeated = 0;
+
+  text.split("\n").forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) return;
+    const lineNumber = index + 1;
+
+    if (!line.includes("\t")) {
+      skipped.push({ lineNumber, text: line, reason: "no tab between the English and the translation" });
+      return;
+    }
+    const parts = line.split("\t");
+    const english = parts[0].trim();
+    const translated = parts[1].trim();
+    if (!english) {
+      skipped.push({ lineNumber, text: line, reason: "the English column is empty" });
+      return;
+    }
+    if (!translated) {
+      skipped.push({ lineNumber, text: line, reason: "the translation column is empty" });
+      return;
+    }
+
+    const key = glossaryTermKey(english);
+    if (byKey.has(key)) repeated++;
+    byKey.set(key, { english, translated });
+  });
+
+  return { pairs: Array.from(byKey.values()), skipped, repeated };
+}
+
 export async function updateGlossaryTerm(
   id: number,
   englishTerm: string,

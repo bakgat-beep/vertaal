@@ -7,6 +7,7 @@ export interface ExportPreflight {
   confirmed: number;
   outdated: number;
   flagged: number;
+  drafts: number;
 }
 
 export type ExportOutcome =
@@ -105,6 +106,14 @@ export default function ExportSummary({
               </p>
             )}
 
+            {preflight.drafts > 0 && (
+              <p style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
+                ✎ {preflight.drafts.toLocaleString()} string(s) have a translation that isn't confirmed yet (AI drafts
+                or your own unconfirmed edits). Only confirmed strings are exported, so these will be left out until you
+                confirm them.
+              </p>
+            )}
+
             {preflight.confirmed === 0 && (
               <p style={{ color: "#e05a5a" }}>No confirmed translations yet — there's nothing to export.</p>
             )}
@@ -146,6 +155,12 @@ export default function ExportSummary({
               <p style={{ color: "var(--status-ai-draft)", fontSize: "0.85rem" }}>
                 ⚠ {preflight.outdated.toLocaleString()} of the exported strings were confirmed before a source-text
                 change — worth a review pass.
+              </p>
+            )}
+
+            {preflight.drafts > 0 && (
+              <p style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
+                {preflight.drafts.toLocaleString()} unconfirmed draft(s) were not included.
               </p>
             )}
 

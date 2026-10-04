@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { documentDir, join } from "@tauri-apps/api/path";
@@ -10,8 +10,12 @@ import {
   deleteGlossaryTerm,
   addGlossaryTerm,
   effectiveStatus,
+  findDuplicateTerm,
+  findDuplicateTermInDb,
+  parseBulkGlossaryText,
   type GlossaryRow,
 } from "./glossary";
+import { resolveUsageCounts, type UsageCache } from "./usageCounts";
 import { confirm } from "./confirm";
 import { useEscapeKey } from "./hooks/useEscapeKey";
 
@@ -90,12 +94,23 @@ export default function GlossaryManager({
     loadUsageCounts(rows);
   }
 
+  // Counts already worked out while this window is open are remembered, so
+  // saving, deleting or flipping back to a page doesn't redo ~4 seconds of
+  // counting for terms that haven't changed. `usageRunId` lets a run that
+  // has been replaced by a newer one stop touching the screen.
+  const usageCache = useRef<UsageCache>(new Map());
+  const usageRunId = useRef(0);
+
   async function loadUsageCounts(rows: GlossaryRow[]) {
-    setUsageCounts({});
-    const entries = await Promise.all(
-      rows.map(async (t) => [t.id, await countGlossaryTermUsage(gameId, t.english_term)] as const)
+    const runId = ++usageRunId.current;
+    await resolveUsageCounts(
+      gameId,
+      rows,
+      usageCache.current,
+      (term) => countGlossaryTermUsage(gameId, term),
+      () => usageRunId.current !== runId,
+      setUsageCounts
     );
-    setUsageCounts(Object.fromEntries(entries));
   }
 
   // ---- Bulk selection ----
@@ -179,6 +194,23 @@ export default function GlossaryManager({
     const scopeGameId = draftShared ? null : gameId;
     const extra = { notes: draftNotes.trim() || null, status: draftStatus };
 
+    // Refuse to create a second copy of a term (same English word, ignoring
+    // capitals, in the same shared/game scope) — whether adding a new one or
+    // renaming an existing one onto a word that's already taken.
+    const clash = await findDuplicateTermInDb(
+      draftEnglish,
+      scopeGameId,
+      targetLanguage,
+      selected !== "new" && selected ? selected.id : undefined
+    );
+    if (clash) {
+      setPanelMessage(
+        `"${clash.english_term}" is already in the ${draftShared ? "shared glossary" : `${scopeWord}'s glossary`} ` +
+          `(translated as "${clash.translated_term}"). Search for it in the list and edit that one instead.`
+      );
+      return;
+    }
+
     if (selected === "new") {
       await addGlossaryTerm(draftEnglish, draftTranslated, scopeGameId, targetLanguage, extra);
     } else if (selected) {
@@ -206,29 +238,21 @@ export default function GlossaryManager({
   const [bulkStatus, setBulkStatus] = useState("");
 
   async function handleBulkImport() {
-    const lines = bulkText.split("\n").map((l) => l.trim()).filter(Boolean);
-    if (lines.length === 0) return;
+    if (!bulkText.trim()) return;
+
+    const { pairs, skipped, repeated } = parseBulkGlossaryText(bulkText);
 
     // Deliberately NOT using the `terms` state here — that only holds the
     // current page/search results, and bulk-import needs to check against
     // the whole glossary so it updates existing terms instead of creating
     // duplicates for anything sitting off-page.
     const allTerms = await listGlossaryTerms(gameId, targetLanguage, { limit: 100000 });
+    const scopeGameId = bulkShared ? null : gameId;
 
     let added = 0;
     let updated = 0;
-    for (const line of lines) {
-      if (line.startsWith("#")) continue; // section headers from an exported file
-      const parts = line.includes("\t") ? line.split("\t") : line.split(",");
-      if (parts.length < 2) continue;
-      const english = parts[0].trim();
-      const translated = parts[1].trim();
-      if (!english || !translated) continue;
-
-      const scopeGameId = bulkShared ? null : gameId;
-      const existing = allTerms.find(
-        (t) => t.english_term.toLowerCase() === english.toLowerCase() && t.game_id === scopeGameId
-      );
+    for (const { english, translated } of pairs) {
+      const existing = findDuplicateTerm(allTerms, english, scopeGameId);
       if (existing) {
         await updateGlossaryTerm(existing.id, english, translated, scopeGameId);
         updated++;
@@ -237,8 +261,22 @@ export default function GlossaryManager({
         added++;
       }
     }
-    setBulkText("");
-    setBulkStatus(`Imported ${lines.length} line(s): ${added} added, ${updated} updated.`);
+
+    // Only clear the box when every line was understood; otherwise leave the
+    // text there so the unreadable lines can be fixed and pasted again
+    // (re-pasting the good ones is harmless — they just update).
+    if (skipped.length === 0) setBulkText("");
+
+    let message = `Imported ${pairs.length} term(s): ${added} added, ${updated} updated.`;
+    if (repeated > 0) message += ` ${repeated} repeated English word(s) in the paste — the last one was used.`;
+    if (skipped.length > 0) {
+      const shown = skipped
+        .slice(0, 5)
+        .map((x) => `line ${x.lineNumber} (${x.reason})`)
+        .join("; ");
+      message += ` Skipped ${skipped.length} line(s): ${shown}${skipped.length > 5 ? "; …" : ""}.`;
+    }
+    setBulkStatus(message);
     await load();
   }
 
@@ -312,8 +350,9 @@ export default function GlossaryManager({
 
         <div style={{ marginBottom: "1rem" }}>
           <p style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>
-            Paste rows copied from a spreadsheet (English, then Translated, tab-separated — one pair per line) for
-            adding or updating many terms at once. An existing term with the same English word (in the same
+            Paste rows copied from a spreadsheet (English, then Translated, separated by a tab — one pair per line;
+            commas don't work as a separator, since translations can contain commas) for adding or updating many
+            terms at once. An existing term with the same English word (in the same
             shared/game scope) is updated rather than duplicated. For editing one term at a time, notes, or status,
             use the list below instead.
           </p>

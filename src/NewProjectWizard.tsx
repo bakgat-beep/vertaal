@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { createProjectBlocker } from "./createProjectCheck";
 import { getDb } from "./db";
+import { modelFor, withModel, modelToSave, type ModelMemory } from "./providerModel";
+import ProviderTestButton from "./ProviderTestButton";
 import type { Project } from "./types";
 import { GAME_ADAPTERS } from "./games";
 import { validateInstallPath } from "./import";
@@ -102,7 +105,11 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
   const [checkingModels, setCheckingModels] = useState(true);
 
   const [providerId, setProviderId] = useState("ollama");
-  const [providerModel, setProviderModel] = useState("");
+  // One remembered model name per provider (see providerModel.ts) — typing a
+  // name for one provider must not follow you when you pick another.
+  const [modelMemory, setModelMemory] = useState<ModelMemory>({});
+  const providerModel = modelFor(modelMemory, providerId);
+  const setProviderModel = (value: string) => setModelMemory((m) => withModel(m, providerId, value));
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -201,11 +208,15 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
     : [{ code: "english", label: "English" }];
 
   const effectiveTargetLanguage = targetLanguage === "custom" ? customTargetLanguage.trim() : targetLanguage;
-  const canCreate =
-    selectedGameId !== null &&
-    effectiveTargetLanguage.length > 0 &&
-    installPathValid === true &&
-    (projectType === "vanilla" || sourceModName.trim().length > 0);
+  const createBlocker = createProjectBlocker({
+    selectedGameId,
+    effectiveTargetLanguage,
+    installPathValid,
+    checkingPath,
+    projectType,
+    sourceModName,
+  });
+  const canCreate = createBlocker === null;
 
   const provider = providerId ? TRANSLATION_PROVIDERS[providerId] : null;
 
@@ -241,7 +252,7 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
     const finalModName =
       modName.trim() ||
       (isMod ? `${sourceModName} — ${effectiveTargetLanguage} Translation` : `${effectiveTargetLanguage} Translation`);
-    const finalModel = providerId === "ollama" ? selectedModel || null : providerModel.trim() || null;
+    const finalModel = providerId === "ollama" ? selectedModel || null : modelToSave(providerId, modelMemory, "none");
 
     await db.execute(
       `INSERT INTO projects
@@ -498,6 +509,33 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
         </>
       )}
 
+      {providerId && provider && (
+        <ProviderTestButton
+          providerId={providerId}
+          sourceLanguage={sourceLanguage}
+          targetLanguage={effectiveTargetLanguage}
+          disabledReason={effectiveTargetLanguage ? undefined : "Choose the target language first."}
+          settingsFingerprint={JSON.stringify([
+            providerId,
+            providerId === "ollama" ? selectedModel : providerModel,
+            apiKeyInput,
+            baseUrl,
+            sourceLanguage,
+            effectiveTargetLanguage,
+          ])}
+          getConfig={async () => {
+            // Use what's typed on screen; a blank key box means "use the saved key".
+            const saved = await getProviderCredentials(providerId);
+            return {
+              providerId,
+              model: (providerId === "ollama" ? selectedModel : providerModel).trim() || null,
+              apiKey: apiKeyInput.trim() || saved.apiKey,
+              baseUrl: baseUrl.trim() || null,
+            };
+          }}
+        />
+      )}
+
       {!providerId && (
         <p style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
           No AI provider selected — you can still translate manually, or set one up later in project settings.
@@ -512,6 +550,11 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
           Create Project →
         </button>
       </div>
+      {createBlocker && (
+        <p style={{ fontSize: "0.85rem", color: "var(--status-ai-draft)", textAlign: "right" }}>
+          To create the project: {createBlocker[0].toLowerCase() + createBlocker.slice(1)}
+        </p>
+      )}
       {duplicateProjectNotice && (
         <p style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>{duplicateProjectNotice}</p>
       )}

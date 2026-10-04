@@ -9,7 +9,7 @@ import { buildCompanionDescriptor } from "./modExport";
 import { modFolderName } from "./fileNames";
 import { readExportManifest, writeExportManifest, computeStaleRelPaths, removeStaleFiles } from "./exportManifest";
 import type { ExportOutcome, ExportPreflight } from "./ExportSummary";
-import { SQL_OUTDATED } from "./statusFilters";
+import { SQL_OUTDATED, SQL_DRAFT } from "./statusFilters";
 
 // The ONE definition of "this string goes into the exported mod": it is
 // confirmed by a human, has actual text, and is NOT flagged. Both exporters
@@ -23,7 +23,8 @@ export const SQL_EXPORTABLE =
 // Numbers for the "Ready to export?" dialog. `confirmed` is what will really
 // be written; `flagged` is confirmed strings being held back by their flag;
 // `outdated` is how many of the exported strings were confirmed before their
-// source text changed.
+// source text changed; `drafts` is strings that have text but were never
+// confirmed (AI drafts and your own unconfirmed edits), which are left out.
 export async function getExportPreflight(project: Project): Promise<ExportPreflight> {
   const db = await getDb();
   const result = (await db.select(
@@ -32,7 +33,8 @@ export async function getExportPreflight(project: Project): Promise<ExportPrefli
        COALESCE(SUM(CASE WHEN ${SQL_EXPORTABLE} THEN 1 ELSE 0 END), 0) AS confirmed,
        COALESCE(SUM(CASE WHEN ${SQL_EXPORTABLE} AND ${SQL_OUTDATED} THEN 1 ELSE 0 END), 0) AS outdated,
        COALESCE(SUM(CASE WHEN t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
-         AND t.flagged = 1 THEN 1 ELSE 0 END), 0) AS flagged
+         AND t.flagged = 1 THEN 1 ELSE 0 END), 0) AS flagged,
+       COALESCE(SUM(CASE WHEN ${SQL_DRAFT} AND TRIM(COALESCE(t.translated_text, '')) != '' THEN 1 ELSE 0 END), 0) AS drafts
      FROM strings s
      JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
      WHERE s.game_id = $1 AND t.target_language = $2`,
