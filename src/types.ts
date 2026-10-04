@@ -42,35 +42,3 @@ export interface Project {
   git_remote_url: string | null;
   hidden_from_recent: number;
 }
-export interface TranslationRequest {
-  text: string;
-  sourceLanguage: string;
-  targetLanguage: string;
-  glossaryInstruction?: string; // pre-built, provider-agnostic instruction text
-}
-
-export interface TranslationResult {
-  translatedText: string;
-  raw?: unknown; // provider's original response, kept for debugging
-}
-
-export interface TranslationProvider {
-  id: string;
-  displayName: string;
-  isLocal: boolean;
-  supportsGlossary: boolean;
-  supportsBatch: boolean;
-  requiresModel: boolean;
-
-  translate(request: TranslationRequest, config: ProviderConfig): Promise<TranslationResult>;
-  detectAvailability?(config: ProviderConfig): Promise<boolean>;
-  listModels?(config: ProviderConfig): Promise<string[]>;
-}
-
-// What a project stores about how it's configured to use a given provider.
-export interface ProviderConfig {
-  providerId: string;
-  model: string | null;
-  apiKey: string | null;   // encrypted at rest, same approach as the GitHub token
-  baseUrl: string | null;  // for self-hosted/OpenAI-compatible endpoints
-}

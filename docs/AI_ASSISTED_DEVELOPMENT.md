@@ -57,7 +57,7 @@ Copy this, fill in the bracketed parts, and paste it as your first message:
 >
 > Please clone https://github.com/bakgat-beep/vertaal.git directly rather than asking me to upload anything. Read CONTRIBUTING.md and docs/AI_ASSISTED_DEVELOPMENT.md first.
 >
-> Run `npm test` and `npx tsc --noEmit` after any change that touches tested code (currently `src/parser.ts`).
+> Run `npm test` and `npx tsc --noEmit` after every change (the test suite covers most of the code, so running all of it is the safest check).
 >
 > You'll be working in your own cloned copy, not my real local files — so after every change, give me the literal code to paste into my own local copy: full file content for anything nontrivial, or exact find/replace instructions.
 >

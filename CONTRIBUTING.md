@@ -24,12 +24,12 @@ Vertaal is Windows-only by design (it writes Paradox game/mod files using Window
 
 ### Running the test suite
 
-Vertaal has an automated test suite (using [Vitest](https://vitest.dev/)), currently covering `src/parser.ts` — the token-protection logic, which is the part of the codebase most likely to silently break game syntax if a change goes wrong.
+Vertaal has an automated test suite (using [Vitest](https://vitest.dev/)) of roughly 290 tests across about 35 files. It covers the token-protection logic in `src/parser.ts` (the part most likely to silently break game syntax if a change goes wrong), every translation provider, the game adapters, import/export, backup and merge, glossary and search behaviour, and many smaller helpers. Test files sit next to the code they test and are named `something.test.ts`.
 
 - `npm test` — runs the test suite
 - `npx tsc --noEmit` — type-checks the whole project without building it (catches a wide class of mistakes before you even run the app)
 
-Run both after any change that touches tested code. When you add a new game, provider, or nontrivial feature, add tests where it's genuinely high-value — the existing tests in `src/parser.test.ts` follow a "test real current behavior against real example strings, don't invent speculative coverage" approach; new tests should follow the same spirit rather than testing implementation details that don't matter.
+Run both after every change. When you add a new game, provider, or nontrivial feature, add tests where it's genuinely high-value — the existing tests in `src/parser.test.ts` follow a "test real current behavior against real example strings, don't invent speculative coverage" approach; new tests should follow the same spirit rather than testing implementation details that don't matter.
 
 ## Tech stack
 
@@ -43,24 +43,27 @@ Run both after any change that touches tested code. When you add a new game, pro
 
 ```
 src/
-  App.tsx            — main editor UI and most application logic
+  App.tsx, AppSettings.tsx, ProjectSettings.tsx, GlossaryManager.tsx,
+  NewProjectWizard.tsx, ConfirmNamesPanel.tsx, ... — the screens and panels of the UI
+  hooks/              — React hooks factoring logic out of the screens (batch translation, editor rows and search paging, panel state, project stats, escape key, click-outside)
   db.ts               — SQLite connection
-  types.ts            — shared TypeScript types
+  types.ts            — shared TypeScript types for projects, strings and rows (provider types live in providers/types.ts)
   parser.ts           — loc file parsing + token protection (see below)
-  parser.test.ts       — automated tests for parser.ts
-  glossary.ts          — glossary matching/injection logic
-  import.ts            — recursive localization file scanner (game-agnostic)
-  translate.ts          — orchestrates calling a provider + protect/restore/validate
-  games/               — one file per supported game (see "Adding a new game")
-  providers/            — one file per AI/translation provider (see "Adding a new translation provider")
-  hooks/               — React hooks factoring logic out of App.tsx (batch translation, editor rows, panel state, project stats)
+  translate.ts        — orchestrates calling a provider + protect/restore/validate
+  glossary.ts         — glossary storage, matching and injection
+  searchPattern.ts    — builds the database search patterns used by the editor and glossary search (see "Search")
+  history.ts          — per-string translation history
+  import.ts, export.ts, exportCheck.ts, exportManifest.ts — localization file scanning and export
   backup.ts, portableExport.ts, mergeImport.ts, git.ts — backup/sync features
   modDescriptor.ts, modExport.ts, steamDetect.ts        — mod-translation support
+  games/              — one file per supported game (see "Adding a new game")
+  providers/          — one file per AI/translation provider, plus credentials (see "Adding a new translation provider")
+  *.test.ts           — automated tests, next to the code they test
 src-tauri/
-  src/lib.rs           — Tauri entry point, migration registration
-  migrations/          — SQL migrations, numbered sequentially
-  tauri.conf.json       — app config (name, window, permissions)
-  capabilities/         — Tauri v2's permission system
+  src/lib.rs          — Tauri entry point, migration registration
+  migrations/         — SQL migrations, numbered sequentially
+  tauri.conf.json     — app config (name, window, permissions)
+  capabilities/       — Tauri v2's permission system
 ```
 
 ## Where contributions help most
@@ -71,7 +74,7 @@ A few areas that are especially valuable and don't require deep familiarity with
 - **Improving an existing game adapter** — fixing an incorrect path convention, a missing native language, or a forbidden-character edge case for a game Vertaal already supports.
 - **Adding a new translation provider** — hooking up another AI/translation API.
 - **Improving the token protection system** (`src/parser.ts`) — the single most sensitive piece of the codebase, since a subtle regression there can silently corrupt game syntax in a way that's easy to miss. See below for how to report or fix a specific case.
-- **Testing coverage** — the test suite currently only covers `parser.ts`; extending it (carefully, against real behavior — see above) to other modules is valuable.
+- **Testing coverage** — most modules have tests, but the screens (`.tsx` files) have little; extending coverage (carefully, against real behavior — see above) is valuable.
 
 ## Adding a new game
 
@@ -96,6 +99,13 @@ Key fields to get right:
 - `supportsGlossary` — can glossary instructions actually be injected into the request for this provider?
 - A `translate()` function that protects/restores tokens correctly (this part is handled centrally in `parser.ts`, not per-provider — providers just need to send/receive plain text).
 
+Optional but useful:
+- `listModels()` — lets the app fetch a list of available models so the user can pick instead of typing one. Used by Ollama and OpenAI-compatible providers.
+- Most providers make their network calls through Tauri's HTTP plugin (`@tauri-apps/plugin-http`) rather than the browser's `fetch`, so they are not blocked by browser cross-origin rules; copy how `deepl.ts` or `libretranslate.ts` does it.
+- The Settings screen has a **Test connection** button (`ProviderTestButton.tsx`, `providerTest.ts`) that works for any provider; it sends a tiny real translation through your provider, so it needs no per-provider code, but check it works with yours.
+- API keys and server addresses are saved through `src/providers/credentials.ts` (encrypted, in the local database), never in project files.
+- Document the provider in `docs/PROVIDERS.md`.
+
 Register the new provider in `src/providers/index.ts`.
 
 ## The token protection system
@@ -103,6 +113,10 @@ Register the new provider in `src/providers/index.ts`.
 `src/parser.ts` is shared across every game and provider. Before any text goes to a translator, `protectTokens()` replaces game syntax — `$VARIABLES$`, `[functions]`, `#formatting#!` codes, `§color§` codes, icon references, etc. — with placeholder tokens, so the AI can't corrupt them. `restoreTokens()` puts them back afterward, and `validateTokensPreserved()` checks nothing was lost or duplicated before a translation is accepted.
 
 If you find a real-world string where this is protecting too much (swallowing real translatable text) or too little (letting game syntax get translated), please open an issue with the **exact string** — regex fixes in this area are easy to get subtly wrong without a concrete real example to test against, and a "sounds like it might happen" report can't be reliably fixed. `src/parser.test.ts` has real examples of what's already handled — a new failing case is a good candidate for a new test alongside the fix.
+
+## Search
+
+The editor and glossary search boxes treat what you type literally: `%`, `_`, `*`, `?` and `\` are ordinary characters, not wildcards. Plain English terms use SQLite `LIKE`, which ignores capitals. SQLite's `LIKE` only ignores capitals for A–Z, so any term containing other characters (for example `Östergötland`) is searched with `GLOB` instead, written so that capitals are still ignored. Accents stay significant on purpose, because in Afrikaans `sê` and `se` are different words. All of this is in `src/searchPattern.ts`; use `buildSearchPattern` / `buildSearchClause` rather than writing `LIKE '%' || ...` by hand in new queries.
 
 ## Database migrations
 
@@ -114,7 +128,7 @@ New schema changes go in `src-tauri/migrations/` as a new numbered file (`00XX_d
 - No new dependencies without a good reason — the stack is intentionally lean
 - If you're touching a regex, test it against a few concrete example strings before submitting, not just the one case that prompted the change
 - TypeScript strictness as already configured — don't relax it to make something compile
-- Run `npm test` and `npx tsc --noEmit` before submitting a change that touches tested code
+- Run `npm test` and `npx tsc --noEmit` before submitting any change
 
 ## Do you need permission to contribute?
 

@@ -5,6 +5,7 @@ import { getDb } from "../db";
 import { createWriteQueue } from "../writeQueue";
 import { SQL_UNTRANSLATED, SQL_OUTDATED, SQL_ISSUES, SQL_DRAFT, SQL_CONFIRMED } from "../statusFilters";
 import { buildStatusClause, shrinkingViewClause, buildStillInViewSql } from "../pagination";
+import { buildSearchPageQuery } from "../searchPattern";
 
 interface UseEditorRowsParams {
   currentProject: Project | null;
@@ -183,11 +184,17 @@ export function useEditorRows({
       batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
     } else if (mode === "search") {
       const effectiveSearchTerm = searchTermOverride ?? searchTerm;
-      const likeTerm = `%${effectiveSearchTerm}%`;
-      const sql =
-        baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
-        " AND (s.key LIKE $3 OR s.source_text LIKE $4 OR t.translated_text LIKE $5) ORDER BY s.file_path, s.key LIMIT $6 OFFSET $7";
-      batch = (await db.select(sql, [lang, gameId, likeTerm, likeTerm, likeTerm, BATCH_SIZE, newOffset])) as EditorRow[];
+      // What was typed is searched for literally (a "_" or "%" is just that
+      // character) and capitals are ignored in every alphabet - see searchPattern.ts.
+      const { sql, params } = buildSearchPageQuery(
+        baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2"),
+        effectiveSearchTerm,
+        lang,
+        gameId,
+        BATCH_SIZE,
+        newOffset
+      );
+      batch = (await db.select(sql, params)) as EditorRow[];
     } else if (mode === "category") {
       const sql =
         baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +

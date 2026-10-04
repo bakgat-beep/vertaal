@@ -1,5 +1,6 @@
 import { getDb } from "./db";
 import { protectTokens } from "./parser";
+import { buildSearchClause, buildSearchPattern } from "./searchPattern";
 
 export interface GlossaryTerm {
   id: number;
@@ -206,8 +207,9 @@ export async function listGlossaryTerms(
   const params: (string | number)[] = [targetLanguage, gameId];
   let searchClause = "";
   if (trimmedSearch) {
-    params.push(`%${trimmedSearch}%`);
-    searchClause = `AND (english_term LIKE $${params.length} OR translated_term LIKE $${params.length} OR notes LIKE $${params.length})`;
+    // Searched for literally (a "_" or "%" is just that character), ignoring
+    // capitals in every alphabet - see searchPattern.ts.
+    searchClause = `AND ${buildSearchClause(["english_term", "translated_term", "notes"], trimmedSearch, params)}`;
   }
   params.push(limit, offset);
   const limitIndex = params.length - 1;
@@ -231,8 +233,9 @@ export async function countGlossaryTerms(gameId: string, targetLanguage: string,
   const params: (string | number)[] = [targetLanguage, gameId];
   let searchClause = "";
   if (trimmedSearch) {
-    params.push(`%${trimmedSearch}%`);
-    searchClause = `AND (english_term LIKE $${params.length} OR translated_term LIKE $${params.length} OR notes LIKE $${params.length})`;
+    // Searched for literally (a "_" or "%" is just that character), ignoring
+    // capitals in every alphabet - see searchPattern.ts.
+    searchClause = `AND ${buildSearchClause(["english_term", "translated_term", "notes"], trimmedSearch, params)}`;
   }
   const result = (await db.select(
     `SELECT COUNT(*) as count FROM glossary WHERE target_language = $1 AND (game_id = $2 OR game_id IS NULL) ${searchClause}`,
@@ -252,9 +255,10 @@ export async function countGlossaryTermUsage(gameId: string, englishTerm: string
   const db = await getDb();
   // The database narrows it down quickly (any string containing the letters);
   // the exact whole-word check then runs on just those candidates.
+  const { operator, pattern, suffix } = buildSearchPattern(term);
   const candidates = (await db.select(
-    "SELECT source_text FROM strings WHERE game_id = $1 AND source_text LIKE $2 ESCAPE '\\' LIMIT 50000",
-    [gameId, `%${term.replace(/[\\%_]/g, "\\$&")}%`]
+    `SELECT source_text FROM strings WHERE game_id = $1 AND source_text ${operator} $2${suffix} LIMIT 50000`,
+    [gameId, pattern]
   )) as { source_text: string }[];
   return candidates.filter((c) => findTermSpans(plainText(c.source_text), term).length > 0).length;
 }
