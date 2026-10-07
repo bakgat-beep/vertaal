@@ -19,9 +19,11 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => "C:\\insta
 vi.mock("@tauri-apps/api/path", () => ({ join: async (...parts: string[]) => parts.join("\\") }));
 
 const strings: any[] = [];
+const otherProjects: { source_language: string }[] = [];
 vi.mock("./db", () => ({
   getDb: async () => ({
     select: async (q: string, p: any[] = []) => {
+      if (q.includes("FROM projects WHERE game_id")) return otherProjects;
       if (q.includes("SELECT key, source_text, file_path, removed_at FROM strings")) {
         return strings.filter((s) => s.game_id === p[0]);
       }
@@ -66,6 +68,7 @@ function setupFolder(fileContents: Record<string, string>) {
 
 beforeEach(() => {
   strings.length = 0;
+  otherProjects.length = 0;
 });
 
 describe("importProjectFolder classification", () => {
@@ -126,5 +129,22 @@ describe("importProjectFolder classification", () => {
     expect(outcome.status).toBe("ok");
     if (outcome.status === "ok") expect(outcome.removedStrings).toBe(0);
     expect(strings.find((s) => s.key === "farewell").removed_at).toBeNull();
+  });
+});
+
+describe("importProjectFolder refuses to overwrite another source language's strings", () => {
+  it("stops before writing anything when another project sharing this id reads a different source language", async () => {
+    setupFolder({ "a_l_english.yml": `l_english:\n greeting:0 "Hello"\n` });
+    otherProjects.push({ source_language: "french" });
+    const outcome = await importProjectFolder(project, gm, () => {});
+    expect(outcome.status).toBe("error");
+    expect((outcome as any).error).toContain("french");
+    expect(strings).toHaveLength(0);
+  });
+
+  it("imports normally when no other project shares the id", async () => {
+    setupFolder({ "a_l_english.yml": `l_english:\n greeting:0 "Hello"\n` });
+    const outcome = await importProjectFolder(project, gm, () => {});
+    expect(outcome.status).toBe("ok");
   });
 });

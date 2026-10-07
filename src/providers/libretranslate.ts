@@ -6,6 +6,7 @@ import type { TranslationProvider, TranslationRequest, TranslationResult, Provid
 // DeepL, whose API rejects browser-origin requests outright. Requests made
 // this way run in the native backend, so none of that applies.
 import { fetch } from "@tauri-apps/plugin-http";
+import { responseError } from "./errors";
 
 const LANGUAGE_CODE_MAP: Record<string, string> = {
   english: "en",
@@ -33,6 +34,8 @@ const LANGUAGE_CODE_MAP: Record<string, string> = {
   // name-based ones above.
   braz_por: "pt",
   simp_chinese: "zh",
+  "simplified chinese": "zh",
+  "brazilian portuguese": "pt",
 };
 
 function toLibreCode(language: string): string {
@@ -64,10 +67,11 @@ async function translate(request: TranslationRequest, config: ProviderConfig): P
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: config.signal,
   });
 
   if (!response.ok) {
-    throw new Error(`LibreTranslate request failed: ${response.status} ${await response.text()}`);
+    throw responseError("LibreTranslate", response.status, await response.text());
   }
 
   const data = await response.json();
@@ -93,6 +97,9 @@ export const libreTranslateProvider: TranslationProvider = {
   requiresModel: false,
   supportsGlossary: false,
   supportsBatch: false,
+  requiresApiKey: false, // optional on some servers
+  supportsCustomBaseUrl: true,
+  isLlm: false,
   translate,
   detectAvailability,
 };

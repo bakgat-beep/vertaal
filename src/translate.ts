@@ -5,6 +5,50 @@ import { loadGlossaryTerms, matchGlossaryTerms, buildGlossaryInstructions, type 
 import { getProjectProvider } from "./providers";
 import { getProviderCredentials } from "./providers/credentials.ts";
 import { GAME_ADAPTERS } from "./games";
+import { isPermanentError } from "./providers/errors";
+import { restoreOuterSpacing, describeChattyReply } from "./replyCheck";
+
+// How long to wait for one reply when the provider does not say otherwise.
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+
+// Runs one provider request that can be cancelled two ways: the person
+// pressing Stop (the caller's signal) and a timeout. Either way the request
+// itself is told to abort, and this promise settles straight away even if the
+// provider ignores that. Returns what the provider returned, or throws:
+//   StoppedError  - the person pressed Stop
+//   TimeoutError  - no answer in time (treated as a temporary failure)
+class StoppedError extends Error {}
+class TimeoutError extends Error {}
+async function runCancellable<T>(
+  start: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  userSignal?: AbortSignal
+): Promise<T> {
+  if (userSignal?.aborted) throw new StoppedError("Stopped by user.");
+  const controller = new AbortController();
+  let cleanup = () => {};
+  const interruption = new Promise<never>((_, reject) => {
+    const onStop = () => {
+      controller.abort();
+      reject(new StoppedError("Stopped by user."));
+    };
+    userSignal?.addEventListener("abort", onStop);
+    const timer = setTimeout(() => {
+      controller.abort();
+      reject(new TimeoutError(`No answer within ${Math.round(timeoutMs / 1000)} seconds.`));
+    }, timeoutMs);
+    cleanup = () => {
+      clearTimeout(timer);
+      userSignal?.removeEventListener("abort", onStop);
+    };
+  });
+  interruption.catch(() => {}); // never an unhandled rejection if the request wins
+  try {
+    return await Promise.race([start(controller.signal), interruption]);
+  } finally {
+    cleanup();
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -50,8 +94,18 @@ export async function translateAndSave(
   // should NOT slow down a single manual click of the per-row "AI" button.
   // Defaults to false so single-string translation stays instant; only the
   // batch functions in useBatchTranslation.ts opt in.
-  applyGoogleTranslateDelay: boolean = false
-): Promise<{ ok: boolean; error?: string }> {
+  applyGoogleTranslateDelay: boolean = false,
+  // Batch runs set this to true. It means: if the string has meanwhile been
+  // confirmed, or has text a person typed (a human draft), leave it alone and
+  // report "skipped" instead of replacing it with an AI draft. The check is
+  // made at the moment of saving, so it also covers a string you confirm
+  // while a batch is running. The single-row "AI" button leaves this false,
+  // because there you are deliberately asking for a fresh AI draft.
+  skipHumanWork: boolean = false,
+  // When it fires (the Stop button), a request already waiting for the
+  // provider is cancelled at once instead of being waited out.
+  signal?: AbortSignal
+): Promise<{ ok: boolean; error?: string; skipped?: boolean; permanent?: boolean; stopped?: boolean }> {
   if (!currentProject) return { ok: false, error: "No project loaded." };
   const provider = getProjectProvider(currentProject);
   if (!provider) {
@@ -81,23 +135,44 @@ export async function translateAndSave(
 
     let rawTranslation: string;
     try {
-      const result = await provider.translate(
-        {
-          text: protectedText,
-          sourceLanguage: currentProject.source_language_code_override?.trim() || currentProject.source_language,
-          targetLanguage: currentProject.target_language_code_override?.trim() || currentProject.target_language,
-          glossaryInstruction,
-        },
-        {
-          providerId: provider.id,
-          model: currentProject.ai_model,
-          apiKey: credentials.apiKey,
-          baseUrl: credentials.baseUrl,
-        }
+      const result = await runCancellable(
+        (requestSignal) =>
+          provider.translate(
+            {
+              text: protectedText,
+              sourceLanguage: currentProject.source_language_code_override?.trim() || currentProject.source_language,
+              targetLanguage: currentProject.target_language_code_override?.trim() || currentProject.target_language,
+              glossaryInstruction,
+            },
+            {
+              providerId: provider.id,
+              model: currentProject.ai_model,
+              apiKey: credentials.apiKey,
+              baseUrl: credentials.baseUrl,
+              signal: requestSignal,
+            }
+          ),
+        provider.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+        signal
       );
       rawTranslation = result.translatedText.trim();
     } catch (err) {
-      return { ok: false, error: `Provider error: ${err}` };
+      if (err instanceof StoppedError) return { ok: false, error: "Stopped by user.", stopped: true };
+      if (err instanceof TimeoutError) return { ok: false, error: `Provider error: ${err.message}` };
+      return {
+        ok: false,
+        error: `Provider error: ${err instanceof Error ? err.message : err}`,
+        permanent: isPermanentError(err) || undefined,
+      };
+    }
+
+    // A chat model that answers with chatter around the translation ("Here is
+    // the translation: ...", a code block, ...) must not have that chatter
+    // saved as game text. Treated as a failed attempt, so it is retried and,
+    // if it keeps happening, flagged for a person to look at.
+    if (provider.isLlm) {
+      const chatty = describeChattyReply(protectedText, rawTranslation);
+      if (chatty) return { ok: false, error: `Rejected: ${chatty}.` };
     }
 
     const gm = GAME_ADAPTERS[currentProject.parent_game_id];
@@ -115,14 +190,19 @@ export async function translateAndSave(
       return { ok: false, error: "AI response did not preserve required game codes/tokens — flagged for manual review." };
     }
 
-    const finalTranslation = restoreTokens(rawTranslation, tokens);
+    // Spaces a string started or ended with are kept exactly as in the source.
+    const finalTranslation = restoreOuterSpacing(sourceText, restoreTokens(rawTranslation, tokens));
 
     // Remember what was there before, so History shows a true before/after.
     const previous = (await db.select(
-      "SELECT translated_text FROM translations WHERE string_key = $1 AND game_id = $2 AND target_language = $3",
+      "SELECT translated_text, status FROM translations WHERE string_key = $1 AND game_id = $2 AND target_language = $3",
       [key, gameId, currentProject.target_language]
-    )) as { translated_text: string | null }[];
+    )) as { translated_text: string | null; status: string | null }[];
     const previousText = previous[0]?.translated_text ?? "";
+
+    if (skipHumanWork && (previous[0]?.status === "human-confirmed" || previous[0]?.status === "human-draft")) {
+      return { ok: true, skipped: true };
+    }
 
     await db.execute(
       `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_text_at_translation)
@@ -162,18 +242,35 @@ export async function translateWithRetry(
   // Passed straight through to translateAndSave — true for every batch
   // caller in useBatchTranslation.ts, since that's the only case the
   // Google Translate delay is meant to apply to.
-  applyGoogleTranslateDelay: boolean = false
-): Promise<{ ok: boolean; error?: string; attempts: number }> {
+  applyGoogleTranslateDelay: boolean = false,
+  // Passed straight through to translateAndSave. Every batch caller sets it
+  // to true so a run can never replace confirmed or hand-typed work.
+  skipHumanWork: boolean = false,
+  signal?: AbortSignal
+): Promise<{ ok: boolean; error?: string; attempts: number; skipped?: boolean; permanent?: boolean; stopped?: boolean }> {
   const delay = retryDelayMs ?? currentProject?.retry_delay_ms ?? 2000;
-  let lastResult: { ok: boolean; error?: string } = { ok: false, error: "No attempts made." };
+  let lastResult: { ok: boolean; error?: string; skipped?: boolean; permanent?: boolean; stopped?: boolean } = {
+    ok: false,
+    error: "No attempts made.",
+  };
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (shouldStop()) {
       return { ok: false, error: "Stopped by user.", attempts: attempt - 1 };
     }
-    lastResult = await translateAndSave(currentProject, key, gameId, sourceText, preloadedGlossaryTerms, applyGoogleTranslateDelay);
+    lastResult = await translateAndSave(currentProject, key, gameId, sourceText, preloadedGlossaryTerms, applyGoogleTranslateDelay, skipHumanWork, signal);
     if (lastResult.ok) {
-      return { ok: true, attempts: attempt };
+      return { ok: true, attempts: attempt, skipped: lastResult.skipped };
+    }
+    // The person pressed Stop: not a failure of this string, so nothing is flagged.
+    if (lastResult.stopped) {
+      return { ok: false, error: "Stopped by user.", attempts: attempt, stopped: true };
+    }
+    // Trying again cannot help (wrong key, no quota, bad address...), and the
+    // string is not at fault, so don't retry and don't flag it - the problem
+    // is in the settings and needs fixing there.
+    if (lastResult.permanent) {
+      return { ok: false, error: lastResult.error ?? "unknown error", attempts: attempt, permanent: true };
     }
     if (attempt < maxAttempts) {
       await sleep(delay);

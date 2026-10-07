@@ -86,7 +86,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
         [modName, providerId, modelToStore, parsedRetryDelay, parsedGoogleDelay, trimmedSourceOverride, trimmedTargetOverride, hiddenFromRecent, project.id]
       );
 
-      if (!isManual && provider && !provider.isLocal) {
+      if (!isManual && provider && (provider.requiresApiKey || provider.supportsCustomBaseUrl)) {
         // A blank key box means "keep the saved key" (undefined), never "delete it".
         await setProviderCredentials(providerId, apiKeyInput.trim() || undefined, baseUrl.trim() || null);
         if (apiKeyInput.trim()) {
@@ -123,8 +123,9 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           </p>
         </div>
 
+        <h3 style={{ marginBottom: 0, marginTop: "0.5rem", paddingBottom: "0.25rem", borderBottom: "1px solid var(--border)" }}>Project</h3>
         <div className="form-row">
-          <div className="form-label">Exported mod name</div>
+          <div className="form-label" title="The name players see in the game's launcher.">Exported mod name</div>
           <input value={modName} onChange={(e) => setModName(e.target.value)} style={{ flexGrow: 1 }} />
         </div>
         <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
@@ -145,8 +146,9 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           </p>
         )}
 
+        <h3 style={{ marginBottom: 0, marginTop: "1.2rem", paddingBottom: "0.25rem", borderBottom: "1px solid var(--border)" }}>Translation</h3>
         <div className="form-row">
-          <div className="form-label">Translation provider</div>
+          <div className="form-label" title="The service or program that writes AI drafts. Choose 'None' to translate everything yourself.">Translation provider</div>
           <select value={providerId} onChange={(e) => setProviderId(e.target.value)} style={{ flexGrow: 1 }}>
             {Object.values(TRANSLATION_PROVIDERS).map((p) => (
               <option key={p.id} value={p.id}>
@@ -165,7 +167,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
 
         {!isManual && (
         <div className="form-row">
-          <div className="form-label">Model</div>
+          <div className="form-label" title="The exact model name the provider should use. Needed for Ollama and OpenAI-compatible servers.">Model</div>
           <input
             value={model}
             onChange={(e) => setModel(e.target.value)}
@@ -186,10 +188,17 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           </p>
         )}
 
-        {!isManual && provider && !provider.isLocal && (
+        {!isManual && provider && !provider.requiresApiKey && !provider.supportsCustomBaseUrl && (
+          <p style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
+            {provider.displayName} needs no API key or address.
+          </p>
+        )}
+
+        {!isManual && provider && (provider.requiresApiKey || provider.supportsCustomBaseUrl) && (
           <>
+            {provider.requiresApiKey && (
             <div className="form-row">
-              <div className="form-label">API key</div>
+              <div className="form-label" title="Your private key for this service. It is stored on this computer only.">API key</div>
               <div style={{ flexGrow: 1, display: "flex", gap: "0.5rem", alignItems: "center" }}>
                 <input
                   type="password"
@@ -201,18 +210,31 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
                 {hasApiKey && <span style={{ color: "var(--status-confirmed)", fontSize: "0.8rem" }}>✓ Saved</span>}
               </div>
             </div>
+            )}
+            {provider.supportsCustomBaseUrl && (
             <div className="form-row">
-              <div className="form-label">Base URL</div>
+              <div className="form-label">{providerId === "ollama" ? "Ollama address" : "Base URL"}</div>
               <input
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="Only needed for self-hosted/OpenAI-compatible endpoints"
+                placeholder={
+                  providerId === "ollama"
+                    ? "Leave blank for this computer (http://localhost:11434)"
+                    : providerId === "libretranslate"
+                    ? "e.g. http://localhost:5000"
+                    : "Leave blank for OpenAI; fill in for a self-hosted server"
+                }
                 style={{ flexGrow: 1 }}
               />
             </div>
+            )}
             <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
-              The API key and Base URL are saved once per provider and shared by every project that uses it —
-              changing them here changes them for all of those projects.
+              {provider.requiresApiKey && provider.supportsCustomBaseUrl
+                ? "The API key and Base URL are"
+                : provider.requiresApiKey
+                ? "The API key is"
+                : "The address is"}{" "}
+              saved once per provider and shared by every project that uses it — changing it here changes it for all of those projects.
             </p>
           </>
         )}
@@ -244,8 +266,9 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
 
         {!isManual && (
           <>
+        <h3 style={{ marginBottom: 0, marginTop: "1.2rem", paddingBottom: "0.25rem", borderBottom: "1px solid var(--border)" }}>Advanced</h3>
         <div className="form-row">
-          <div className="form-label">Retry delay (ms)</div>
+          <div className="form-label" title="Milliseconds to wait before trying a failed string again during a batch run (1000 ms = 1 second).">Retry delay (ms)</div>
           <input
             value={retryDelayMs}
             onChange={(e) => setRetryDelayMs(e.target.value)}
@@ -278,7 +301,6 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
 
         {!isManual && (
           <>
-        <h3 style={{ marginBottom: 0, marginTop: "1rem" }}>Advanced</h3>
         <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "0.25rem" }}>
           Only needed if your provider doesn't recognize "{project.target_language}" (or "{project.source_language}")
           by name — for example, if the provider adds support for a language after our built-in list was written.
@@ -287,7 +309,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
         </p>
 
         <div className="form-row">
-          <div className="form-label">Source language code override</div>
+          <div className="form-label" title="Only fill in if the provider does not recognise the language by name.">Source language code override</div>
           <input
             value={sourceLangOverride}
             onChange={(e) => setSourceLangOverride(e.target.value)}
@@ -297,7 +319,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
         </div>
 
         <div className="form-row">
-          <div className="form-label">Target language code override</div>
+          <div className="form-label" title="Only fill in if the provider does not recognise the language by name.">Target language code override</div>
           <input
             value={targetLangOverride}
             onChange={(e) => setTargetLangOverride(e.target.value)}

@@ -24,7 +24,7 @@ Vertaal is Windows-only by design (it writes Paradox game/mod files using Window
 
 ### Running the test suite
 
-Vertaal has an automated test suite (using [Vitest](https://vitest.dev/)) of roughly 290 tests across about 35 files. It covers the token-protection logic in `src/parser.ts` (the part most likely to silently break game syntax if a change goes wrong), every translation provider, the game adapters, import/export, backup and merge, glossary and search behaviour, and many smaller helpers. Test files sit next to the code they test and are named `something.test.ts`.
+Vertaal has an automated test suite (using [Vitest](https://vitest.dev/)) of more than 450 tests across about 45 files. It covers the token-protection logic in `src/parser.ts` (the part most likely to silently break game syntax if a change goes wrong), every translation provider, the game adapters, import/export, backup and merge, glossary and search behaviour, and many smaller helpers. Test files sit next to the code they test and are named `something.test.ts`.
 
 - `npm test` — runs the test suite
 - `npx tsc --noEmit` — type-checks the whole project without building it (catches a wide class of mistakes before you even run the app)
@@ -49,7 +49,10 @@ src/
   db.ts               — SQLite connection
   types.ts            — shared TypeScript types for projects, strings and rows (provider types live in providers/types.ts)
   parser.ts           — loc file parsing + token protection (see below)
-  translate.ts        — orchestrates calling a provider + protect/restore/validate
+  translate.ts        — orchestrates calling a provider + protect/restore/validate, with time-outs and a Stop signal
+  replyCheck.ts       — spots chatty replies from AI models ("Sure! Here is the translation…") so they are not saved as a translation
+  languageCodes.ts    — language names and codes, shared by the providers and the screens
+  projectIds.ts, latestOnly.ts, unsavedEdit.ts — small helpers (building project ids, ignoring out-of-date async answers, the "edited, not saved yet" marker)
   glossary.ts         — glossary storage, matching and injection
   searchPattern.ts    — builds the database search patterns used by the editor and glossary search (see "Search")
   history.ts          — per-string translation history
@@ -95,9 +98,12 @@ Every provider implements the `TranslationProvider` interface (`src/providers/ty
 
 Key fields to get right:
 - `isLocal` — is this a local/offline service (like Ollama), or does it call out to the internet?
+- `requiresApiKey`, `supportsCustomBaseUrl` — tell Project Settings which boxes to show
+- `isLlm` — is it a chat-style AI model? If so, replies are checked for chatty extras (see `replyCheck.ts`)
+- `requestTimeoutMs` (optional) — how long to wait for one answer; the default is 60 seconds
 - `requiresModel` — does this provider need a specific model name (Ollama, OpenAI-compatible), or is it a fixed-engine service that doesn't take one (DeepL, Google Translate, LibreTranslate)? Getting this wrong blocks translation entirely for that provider — this exact bug happened once already, worth double-checking.
 - `supportsGlossary` — can glossary instructions actually be injected into the request for this provider?
-- A `translate()` function that protects/restores tokens correctly (this part is handled centrally in `parser.ts`, not per-provider — providers just need to send/receive plain text).
+- A `translate()` function that protects/restores tokens correctly (this part is handled centrally in `parser.ts`, not per-provider — providers just need to send/receive plain text). Pass `config.signal` to `fetch` so the Stop button works, and throw a `ProviderError` (see `src/providers/errors.ts`) for failures, using `responseError(...)` for bad HTTP replies: it marks errors that can never succeed on retry (wrong key, unknown model) as permanent, so batches stop instead of failing every string.
 
 Optional but useful:
 - `listModels()` — lets the app fetch a list of available models so the user can pick instead of typing one. Used by Ollama and OpenAI-compatible providers.
@@ -124,6 +130,8 @@ New schema changes go in `src-tauri/migrations/` as a new numbered file (`00XX_d
 
 ## Conventions
 
+- Permanent tests use in-memory fakes of `./db` (and mocks of the Tauri plugins); they never touch a real database. A new test for a fix should be shown to fail when the fix is temporarily removed.
+- Never auto-confirm translations, and never weaken the token-protection checks
 - Small, focused, testable changes over large ones — easier to review, easier to bisect if something breaks later
 - No new dependencies without a good reason — the stack is intentionally lean
 - If you're touching a regex, test it against a few concrete example strings before submitting, not just the one case that prompted the change

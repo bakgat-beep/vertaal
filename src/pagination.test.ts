@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { shrinkingViewClause, buildStatusClause, buildStillInViewSql } from "./pagination";
-import { SQL_UNTRANSLATED, SQL_DRAFT, SQL_CONFIRMED, SQL_OUTDATED, SQL_ISSUES } from "./statusFilters";
+import { SQL_UNTRANSLATED, SQL_DRAFT, SQL_CONFIRMED, SQL_OUTDATED, SQL_ISSUES, SQL_FLAGGED } from "./statusFilters";
 
 const ALL = new Set(["untranslated", "draft", "human-confirmed"]);
 
@@ -11,7 +11,7 @@ describe("shrinkingViewClause", () => {
     expect(shrinkingViewClause("translated", ALL)).toBe(SQL_CONFIRMED);
     expect(shrinkingViewClause("outdated", ALL)).toBe(SQL_OUTDATED);
     expect(shrinkingViewClause("issues", ALL)).toBe(SQL_ISSUES);
-    expect(shrinkingViewClause("flagged", ALL)).toBe("t.flagged = 1");
+    expect(shrinkingViewClause("flagged", ALL)).toBe(SQL_FLAGGED);
   });
 
   it("returns null for lists where nothing drops out", () => {

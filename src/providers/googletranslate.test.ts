@@ -30,7 +30,7 @@ describe("googleTranslateProvider", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toContain("translate.googleapis.com");
     // No custom headers are needed or sent — the browser supplies its own.
-    expect(fetchMock.mock.calls[0][1]).toBeUndefined();
+    expect(fetchMock.mock.calls[0][1]?.headers).toBeUndefined();
   });
 
   it("parses a real-shaped response into plain translated text", async () => {

@@ -16,9 +16,9 @@ You choose a provider per-project, in Project Settings (or when creating a new p
   - ollama pull translategemma
    (or whichever TranslateGemma variant/size you prefer — check the [Ollama model library](https://ollama.com/library) for available sizes; larger models are slower but generally better quality)
 3. Make sure Ollama is running (it usually starts automatically and sits in the system tray)
-4. In Vertaal, create or open a project, set the provider to "TranslateGemma (local, via Ollama)" — Vertaal will detect any installed models automatically
+4. In Vertaal, create or open a project, set the provider to "TranslateGemma (local, via Ollama)" — Vertaal will detect any installed models automatically. Only models whose name starts with `translategemma` are offered, because the prompt Vertaal sends is written for that model family.
 
-No API key needed — this is the only provider with nothing to configure beyond having Ollama running.
+No API key needed. If Ollama runs on another computer on your network, enter its address in the **Ollama address** box in the project's settings (leave it blank for this computer, `http://localhost:11434`). Local models can be slow to answer while they load, so Vertaal waits up to five minutes for each string before giving up.
 
 ## Cloud providers
 
@@ -26,7 +26,13 @@ These need an account/API key with the respective service, entered in Project Se
 
 - **DeepL** — generally excellent translation quality; requires a DeepL API key (they offer a free tier with a monthly character limit)
 - **LibreTranslate** — open-source, self-hostable, or usable via a public instance
-- **Any OpenAI-compatible endpoint** — for using GPT-family models, or any other service that speaks the same API shape (including some self-hosted options)
+- **Any OpenAI-compatible endpoint** — for using GPT-family models, or any other service that speaks the same API shape (including some self-hosted options). You need a model name (for example `gpt-4o-mini`); leave the Base URL blank for OpenAI itself, or enter your own server's address. Vertaal sends no temperature setting, because some newer models reject one.
+
+**Glossary:** the glossary is applied automatically only by the AI-model providers (TranslateGemma/Ollama and OpenAI-compatible). DeepL, LibreTranslate and Google Translate do not apply it; Project Settings tells you so, and glossary terms still help you check drafts by eye.
+
+## Stopping, errors and retries
+
+Every batch run has a **Stop** button that ends the run promptly, including a request already in flight. If a provider says something that can never succeed by retrying (a wrong API key, an unknown model, no credit left, a text that is too long), Vertaal stops the batch and tells you why instead of marking every remaining string as failed. Temporary problems (the server is busy, a time-out) are retried after the retry delay in Project Settings. A one-page batch also stops by itself after three failures in a row.
 
 ## Google Translate — implementation details and limitations
 

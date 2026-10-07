@@ -5,12 +5,22 @@ export interface ParsedString {
 
 export function parseLocFile(content: string): ParsedString[] {
   const results: ParsedString[] = [];
-  const lines = content.split("\n");
+  // Split on Windows (\r\n) and Unix (\n) line endings alike. Splitting on
+  // "\n" alone left a stray \r at the end of each Windows line, and a line
+  // with a trailing "# comment" then failed to match and was silently skipped.
+  const lines = content.split(/\r?\n/);
   // Keys are usually letters, numbers, underscores and dots, but a hyphen is
   // also a legal character in a Paradox loc key and does appear in some
   // mods/games — excluding it meant that whole line was silently skipped on
   // import, with no warning that anything had been left out.
-  const linePattern = /^\s*([A-Za-z0-9_.-]+):\d*\s*"(.*?)"\s*(#.*)?$/;
+  //
+  // The text between the quotes is read as: an escaped pair (\" or \\ and so
+  // on) taken as a unit, a bare quote (the game tolerates these), or any
+  // other character. Taking \" as a unit matters: previously a line such as
+  //   k: "He said \"#bold hi#!\" ok"
+  // was cut short at the escaped quote, because what followed it looked like
+  // a trailing "# comment", so the translatable text was silently truncated.
+  const linePattern = /^\s*([A-Za-z0-9_.-]+):\d*\s*"((?:\\.|[^\\])*?)"\s*(#.*)?$/;
   for (const line of lines) {
     const match = line.match(linePattern);
     if (match) results.push({ key: match[1], text: match[2] });

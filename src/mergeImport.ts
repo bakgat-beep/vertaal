@@ -99,6 +99,14 @@ export async function importPortableProjectData(project: Project, filePath: stri
       summary.skippedLocalNewer++;
       continue;
     }
+    // An incoming translation with NO timestamp has an unknown age, so it must
+    // never replace a local translation whose age is known. (Before, it slipped
+    // past the check above, replaced your work, and was given a brand-new
+    // timestamp that made it look like the newest edit.)
+    if (!t.updated_at && local?.updated_at && (local.translated_text ?? "").trim() !== "") {
+      summary.skippedLocalNewer++;
+      continue;
+    }
 
     // What the translation was made against (so a changed source is noticed).
     const baseline = baselineForImportedTranslation(t, localString[0].source_text, data.format_version ?? 1);

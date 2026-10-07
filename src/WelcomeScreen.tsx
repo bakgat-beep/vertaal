@@ -84,8 +84,8 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
     for (const p of visible) {
       const result = (await db.select(
         `SELECT
-           (SELECT COUNT(*) FROM strings WHERE game_id = $1) as total,
-           (SELECT COUNT(*) FROM translations WHERE status = 'human-confirmed' AND game_id = $1 AND target_language = $2) as confirmed`,
+           (SELECT COUNT(*) FROM strings WHERE game_id = $1 AND removed_at IS NULL) as total,
+           (SELECT COUNT(*) FROM translations t JOIN strings s ON s.key = t.string_key AND s.game_id = t.game_id WHERE t.status = 'human-confirmed' AND s.removed_at IS NULL AND t.game_id = $1 AND t.target_language = $2) as confirmed`,
         [p.game_id, p.target_language]
       )) as { total: number; confirmed: number }[];
       withCounts.push({ ...p, total: result[0].total, confirmed: result[0].confirmed });

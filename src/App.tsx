@@ -11,6 +11,9 @@ import { join } from "@tauri-apps/api/path";
 import "./App.css";
 import { getDb } from "./db";
 import type { EditorRow, Project } from "./types";
+import { languageDisplayName } from "./languageCodes";
+import { hasUnsavedEdit } from "./unsavedEdit";
+import { Icon } from "./Icon";
 import { GAME_ADAPTERS } from "./games";
 import { protectTokens } from "./parser";
 import { getContributorName, setContributorName } from "./settings";
@@ -229,8 +232,13 @@ function App() {
     if (row.status === "human-confirmed") {
       return { label: "confirmed", className: "status-chip-confirmed", barColor: "var(--status-confirmed)" };
     }
-    if (row.status === "ai-suggested" || row.status === "human-draft") {
-      return { label: row.status === "ai-suggested" ? "ai draft" : "draft", className: "status-chip-aidraft", barColor: "var(--status-ai-draft)" };
+    // Two kinds of draft, two colours: amber = a machine wrote it and nobody
+    // has checked it; blue = a person typed it but hasn't confirmed it yet.
+    if (row.status === "ai-suggested") {
+      return { label: "ai draft", className: "status-chip-aidraft", barColor: "var(--status-ai-draft)" };
+    }
+    if (row.status === "human-draft") {
+      return { label: "your draft", className: "status-chip-humandraft", barColor: "var(--status-human-draft)" };
     }
     return { label: "untranslated", className: "status-chip-untranslated", barColor: "var(--status-untranslated)" };
   }
@@ -779,6 +787,7 @@ function App() {
 
       <div className="content-columns">
         <div className="sidebar">
+          <div className="sidebar-section-label">Browse</div>
           <div
             className={sidebarClass(viewMode === "all")}
             onClick={() => loadPage("all", 0)}
@@ -813,12 +822,13 @@ function App() {
             <span>Confirmed</span>
             <span className="sidebar-count">{statusCounts.confirmed.toLocaleString()}</span>
           </div>
+          <div className="sidebar-section-label">Needs attention</div>
           <div
             className={sidebarClass(viewMode === "outdated")}
             onClick={() => loadPage("outdated", 0)}
             title="Translations (confirmed or draft) that were made against an EARLIER version of the original text — the game changed the text after you translated it, usually in a patch. Select one to see exactly what changed. Confirming it again clears the warning."
           >
-            <span>⚠ Patch Changed</span>
+            <span className="sidebar-label-with-icon"><Icon name="warning" />Patch Changed</span>
             <span className="sidebar-count" style={{ opacity: statusCounts.outdated === 0 ? 0.4 : 1 }}>
               {statusCounts.outdated.toLocaleString()}
             </span>
@@ -829,7 +839,7 @@ function App() {
               onClick={() => loadPage("issues", 0)}
               title="Strings marked as drafted or confirmed but with no actual text saved"
             >
-              <span>⚠ Check for Issues</span>
+              <span className="sidebar-label-with-icon"><Icon name="warning" />Check for Issues</span>
               <span className="sidebar-count">{statusCounts.issues.toLocaleString()}</span>
             </div>
           )}
@@ -838,23 +848,29 @@ function App() {
             onClick={() => loadPage("flagged", 0)}
             title="Strings you've flagged for follow-up. Flagged strings are left out of the exported mod until you clear the flag."
           >
-            <span>🚩 Flagged</span>
+            <span className="sidebar-label-with-icon"><Icon name="flag" />Flagged</span>
             <span className="sidebar-count" style={{ opacity: statusCounts.flagged === 0 ? 0.4 : 1 }}>
               {statusCounts.flagged.toLocaleString()}
             </span>
           </div>
 
-          <div style={{ height: "1px", background: "var(--border)", margin: "0.6rem 0" }} />
+          <div className="sidebar-section-label">Categories</div>
 
           {categories.map((cat) => (
-            <div key={cat.category}>
+            <div key={cat.category} className="sidebar-category">
               <div
-                className={sidebarClass(viewMode === "category" && categoryFilter === cat.category)}
+                className={sidebarClass(viewMode === "category" && categoryFilter === cat.category) + " sidebar-tier-1"}
                 onClick={() => selectCategory(cat.category)}
                 title="Show this category. The number is how many of its strings are not yet confirmed (drafts still count as left)."
               >
-                <span onClick={(e) => { e.stopPropagation(); toggleCategoryExpanded(cat.category); }}>
-                  {expandedCategories.has(cat.category) ? "▾ " : "▸ "}
+                <span className="sidebar-label-with-icon">
+                  <span
+                    className="sidebar-chevron"
+                    title={expandedCategories.has(cat.category) ? "Hide the sub-categories" : "Show the sub-categories"}
+                    onClick={(e) => { e.stopPropagation(); toggleCategoryExpanded(cat.category); }}
+                  >
+                    <Icon name="chevron" size={12} className={expandedCategories.has(cat.category) ? "chevron-open" : ""} />
+                  </span>
                   {cat.category.replace(/_/g, " ")}
                 </span>
                 <span className="sidebar-count" style={{ opacity: cat.left === 0 ? 0.4 : 1 }}>
@@ -869,15 +885,16 @@ function App() {
                 cat.subcategories.map((sub) => (
                   <div key={sub.subcategory}>
                     <div
-                      className={sidebarClass(
-                        viewMode === "subcategory" &&
-                          categoryFilter === cat.category &&
-                          subcategoryFilter === sub.subcategory
-                      )}
-                      style={{ paddingLeft: "1.8rem" }}
+                      className={
+                        sidebarClass(
+                          viewMode === "subcategory" &&
+                            categoryFilter === cat.category &&
+                            subcategoryFilter === sub.subcategory
+                        ) + " sidebar-tier-2"
+                      }
                       onClick={() => selectSubcategory(cat.category, sub.subcategory)}
                     >
-                      <span style={{ fontSize: "0.8rem" }}>{sub.subcategory.replace(/_/g, " ")}</span>
+                      <span>{sub.subcategory.replace(/_/g, " ")}</span>
                       <span className="sidebar-count" style={{ opacity: sub.left === 0 ? 0.4 : 1 }}>
                         {sub.left.toLocaleString()} left
                       </span>
@@ -926,7 +943,7 @@ function App() {
                       }}
                       style={{ opacity: active ? 1 : 0.5 }}
                     >
-                      {active ? "✓ " : ""}
+                      {active ? <Icon name="check" size={12} style={{ marginRight: 3 }} /> : null}
                       {bucket.label}
                     </button>
                   );
@@ -962,21 +979,28 @@ function App() {
             </div>
           )}
           {rows.length > 0 && (
-            <div style={{ marginTop: "1rem" }}>
+            <div style={{ marginTop: "0.25rem" }}>
+              <div className="row-grid row-grid-header">
+                <div>Key</div>
+                <div>{languageDisplayName(currentProject.source_language)} (original)</div>
+                <div>{languageDisplayName(currentProject.target_language)} (your translation)</div>
+                <div style={{ textAlign: "center" }}>Actions</div>
+              </div>
               {rows.map((row) => {
                 const meta = statusMeta(row);
                 const outdated = isOutdated(row);
                 const removed = !!row.removed_at;
                 const isSelected = selectedRow?.key === row.key;
+                // True while the box holds text that isn't saved yet (it saves
+                // when you click out of the box).
+                const unsaved = hasUnsavedEdit(drafts[row.key], row.translated_text);
 
                 return (
                   <div
                     key={row.key}
                     onClick={() => setSelectedRow(row)}
-                    className={isSelected ? "row-selected" : ""}
+                    className={isSelected ? "row-grid row-selected" : "row-grid"}
                     style={{
-                      display: "grid",
-                      gridTemplateColumns: "minmax(0, 10%) minmax(0, 30%) minmax(0, 50%) minmax(0, 10%)",
                       borderLeft: removed ? "4px solid var(--text-dim)" : outdated ? "4px solid #e0a04c" : `4px solid ${meta.barColor}`,
                       borderBottom: "1px solid var(--border)",
                       padding: "0.5rem",
@@ -987,15 +1011,20 @@ function App() {
                     <div style={{ overflowWrap: "break-word", minWidth: 0 }}>
                       <div className="row-key" style={{ overflowWrap: "break-word" }}>{row.key}</div>
                       <span className={`status-chip ${meta.className}`}>{meta.label}</span>
+                      {unsaved && (
+                        <div className="unsaved-marker" title="You've changed this text. It is saved as soon as you click outside the box.">
+                          <Icon name="dot" size={10} /> edited, not saved yet
+                        </div>
+                      )}
                       {removed && (
                         <div
                           style={{ color: "var(--text-dim)", fontSize: "0.7rem" }}
                           title="This string was not found the last time its file was imported — most likely a game patch removed it. It's still safe to leave translated; it just isn't needed anymore."
                         >
-                          ⊘ no longer in game files
+                          <Icon name="ban" size={12} /> no longer in game files
                         </div>
                       )}
-                      {!removed && outdated && <div style={{ color: "#e0a04c", fontSize: "0.7rem" }}>⚠ source changed</div>}
+                      {!removed && outdated && <div style={{ color: "#e0a04c", fontSize: "0.7rem" }}><Icon name="warning" size={12} /> source changed</div>}
                       <div style={{ color: "var(--text-dim)", fontSize: "0.75rem" }}>{row.context_label}</div>
                     </div>
                     <div
@@ -1013,6 +1042,7 @@ function App() {
                         onBlur={() => saveDraft(row)}
                         placeholder="— not yet translated —"
                         rows={estimateRows(drafts[row.key] ?? "")}
+                        className={unsaved ? "translation-box translation-box-edited" : "translation-box"}
                         style={{ width: "100%" }}
                       />
                     </div>
@@ -1031,14 +1061,14 @@ function App() {
                         </button>
                       )}
                       <button className="action-btn confirm" title="Confirm this translation. If the box is empty, the original text is confirmed as-is (for names and codes that shouldn't be translated)." onClick={(e) => { e.stopPropagation(); confirmRow(row); }}>
-                        ✓
+                        <Icon name="check" />
                       </button>
                       <button
                         className={row.flagged ? "action-btn flag flagged" : "action-btn flag"}
                         title={row.flagged ? "Remove the flag" : "Flag for review — flagged strings are left out of the exported mod until you remove the flag"}
                         onClick={(e) => { e.stopPropagation(); toggleFlag(row); }}
                       >
-                        ⚑
+                        <Icon name="flag" />
                       </button>
                     </div>
                   </div>
@@ -1083,19 +1113,19 @@ function App() {
 
                   {selectedRow.removed_at && (
                     <div className="context-alert context-alert-warning">
-                      ⊘ No longer found in the game's files as of the last import — most likely removed by a patch.
+                      <Icon name="ban" size={12} /> No longer found in the game's files as of the last import — most likely removed by a patch.
                       Safe to leave as-is; it just isn't needed in the export anymore.
                     </div>
                   )}
                   {!selectedRow.removed_at && isOutdated(selectedRow) && (
                     <>
                       <div className="context-alert context-alert-warning">
-                        ⚠ The original text changed since this was translated
+                        <Icon name="warning" size={12} /> The original text changed since this was translated
                       </div>
                       <SourceDiff before={selectedRow.source_text_at_translation ?? ""} after={selectedRow.source_text} />
                     </>
                   )}
-                  {selectedRow.flagged ? <div className="context-alert context-alert-flag">⚑ Flagged for review</div> : null}
+                  {selectedRow.flagged ? <div className="context-alert context-alert-flag"><Icon name="flag" size={12} /> Flagged for review</div> : null}
 
                   {selectedRow.translated_by && (
                     <div className="context-field">
@@ -1185,7 +1215,8 @@ function App() {
           </span>
           <span>
             <span className="status-dot" style={{ background: "var(--status-ai-draft)" }} />
-            {statusCounts.drafts.toLocaleString()} drafts
+            <span className="status-dot" style={{ background: "var(--status-human-draft)" }} />
+            {statusCounts.drafts.toLocaleString()} drafts (AI + yours)
           </span>
           <span>
             <span className="status-dot" style={{ background: "var(--status-confirmed)" }} />
@@ -1204,6 +1235,7 @@ function App() {
       {panels.glossary && currentProject && (
         <GlossaryManager
           gameId={currentProject.game_id}
+          sourceLanguage={currentProject.source_language}
           targetLanguage={currentProject.target_language}
           isModProject={currentProject.project_type === "mod"}
           providerName={provider ? provider.displayName : null}

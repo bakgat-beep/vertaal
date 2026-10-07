@@ -8,16 +8,21 @@
 // All of them expect a query that names the translations table `t` and the
 // strings table `s` (a LEFT JOIN from strings to translations, so a string
 // with no translation row at all still counts as untranslated).
+//
+// Every one of them also leaves out strings that are no longer in the game's
+// files (s.removed_at is set - most likely a patch removed them), so those
+// never inflate the totals, the "left to do" numbers or the lists. They are
+// still visible, dimmed, under "All strings" and in search results.
 
 // Nothing usable yet: no row at all, or a row that is just holding a flag.
-export const SQL_UNTRANSLATED = "(t.status IS NULL OR t.status = 'untranslated')";
+export const SQL_UNTRANSLATED = "(s.removed_at IS NULL AND (t.status IS NULL OR t.status = 'untranslated'))";
 
 // Has text, but a person hasn't confirmed it: an AI suggestion OR something
 // you typed yourself and haven't confirmed yet.
-export const SQL_DRAFT = "t.status IN ('ai-suggested', 'human-draft')";
+export const SQL_DRAFT = "(s.removed_at IS NULL AND t.status IN ('ai-suggested', 'human-draft'))";
 
 // Confirmed by a person.
-export const SQL_CONFIRMED = "t.status = 'human-confirmed'";
+export const SQL_CONFIRMED = "(s.removed_at IS NULL AND t.status = 'human-confirmed')";
 
 // Translated against an EARLIER version of the source text ("Patch Changed").
 // A translation stores the earlier wording only when the source has changed
@@ -27,11 +32,14 @@ export const SQL_CONFIRMED = "t.status = 'human-confirmed'";
 // no translation (status 'untranslated') never count. (Same rule as
 // isSourceChanged in sourceChange.ts, which a test keeps in step with this.)
 export const SQL_OUTDATED =
-  "t.source_text_at_translation IS NOT NULL AND t.status != 'untranslated' AND t.source_text_at_translation != s.source_text";
+  "(s.removed_at IS NULL AND t.source_text_at_translation IS NOT NULL AND t.status != 'untranslated' AND t.source_text_at_translation != s.source_text)";
+
+// Flagged for another look.
+export const SQL_FLAGGED = "(s.removed_at IS NULL AND t.flagged = 1)";
 
 // Marked as done/drafted but there is no actual text saved — except when the
 // ORIGINAL is itself blank (empty, or only spaces / tabs / line breaks): such
 // strings are supposed to be confirmed as they are (see isBlank in
 // codeOnly.ts, which uses the same set of characters).
 export const SQL_ISSUES =
-  "t.status IN ('human-confirmed', 'ai-suggested', 'human-draft') AND (t.translated_text IS NULL OR TRIM(t.translated_text) = '') AND TRIM(s.source_text, ' ' || char(9) || char(10) || char(13)) != ''";
+  "(s.removed_at IS NULL AND t.status IN ('human-confirmed', 'ai-suggested', 'human-draft') AND (t.translated_text IS NULL OR TRIM(t.translated_text) = '') AND TRIM(s.source_text, ' ' || char(9) || char(10) || char(13)) != '')";

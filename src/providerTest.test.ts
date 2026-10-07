@@ -15,6 +15,9 @@ function fakeProvider(
     supportsGlossary: false,
     supportsBatch: false,
     requiresModel: false,
+    requiresApiKey: false,
+    supportsCustomBaseUrl: false,
+    isLlm: false,
     translate,
     ...over,
   };

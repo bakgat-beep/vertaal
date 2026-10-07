@@ -1,6 +1,9 @@
 import { Command } from "@tauri-apps/plugin-shell";
 
-function redactCredentials(args: string[], output: string): string {
+// Removes anything that looks like a password from text before it is shown.
+// Two cases: a password written into a web address (https://secret@host), and
+// the token itself, which is passed in separately.
+function redactCredentials(args: string[], output: string, token: string | null = null): string {
   let redacted = output;
   for (const arg of args) {
     const match = arg.match(/^https:\/\/([^@/]+)@/);
@@ -9,17 +12,48 @@ function redactCredentials(args: string[], output: string): string {
       redacted = redacted.split(credential).join("***");
     }
   }
+  if (token) redacted = redacted.split(token).join("***");
   return redacted;
 }
 
-async function runGit(args: string[], cwd: string): Promise<{ ok: boolean; output: string }> {
+// The name of the environment variable that carries the GitHub token to Git.
+// An environment variable is private to the one Git process we start, whereas
+// command-line arguments can be seen by any program on the computer that lists
+// running processes (Task Manager's "command line" column, for example).
+export const TOKEN_ENV_NAME = "VERTAAL_GIT_TOKEN";
+
+// Git settings that make Git ask a tiny helper for the password instead of us
+// writing the password into the command. The first "credential.helper=" (empty)
+// clears any helper already configured on this computer, so ours is the only
+// one asked. The helper itself just prints the token from the environment
+// variable; the token never appears in the command, in the saved remote address
+// or in Git's own config files.
+export function tokenCredentialArgs(): string[] {
+  return [
+    "-c",
+    "credential.helper=",
+    "-c",
+    `credential.helper=!f() { echo username=x-access-token; echo "password=$${TOKEN_ENV_NAME}"; }; f`,
+  ];
+}
+
+async function runGit(
+  args: string[],
+  cwd: string,
+  token: string | null = null
+): Promise<{ ok: boolean; output: string }> {
   try {
-    const cmd = Command.create("run-git", args, { cwd });
+    // GIT_TERMINAL_PROMPT=0: if the password is wrong, fail with a message
+    // rather than waiting for someone to type into a window that isn't there.
+    const env: Record<string, string> = { GIT_TERMINAL_PROMPT: "0" };
+    if (token) env[TOKEN_ENV_NAME] = token;
+    const fullArgs = token ? [...tokenCredentialArgs(), ...args] : args;
+    const cmd = Command.create("run-git", fullArgs, { cwd, env });
     const result = await cmd.execute();
-    const output = redactCredentials(args, (result.stdout + result.stderr).trim());
+    const output = redactCredentials(fullArgs, (result.stdout + result.stderr).trim(), token);
     return { ok: result.code === 0, output };
   } catch (err) {
-    return { ok: false, output: redactCredentials(args, String(err)) };
+    return { ok: false, output: redactCredentials(args, String(err), token) };
   }
 }
 
@@ -65,17 +99,21 @@ export async function commitAll(
   message: string,
   contributorName: string | null
 ): Promise<{ ok: boolean; output: string }> {
-  await runGit(["add", "."], folderPath);
+  // If staging fails, stop here. Committing anyway could save an older,
+  // half-staged set of files and then report success, so this change would
+  // quietly be left out of what gets shared.
+  const staged = await runGit(["add", "."], folderPath);
+  if (!staged.ok) {
+    return { ok: false, output: `Could not prepare the files to be saved (git add failed): ${staged.output}` };
+  }
   return runGit([...gitIdentityArgs(contributorName), "commit", "-m", message], folderPath);
 }
 
-function withTokenEmbedded(remoteUrl: string, token: string): string {
-  return remoteUrl.replace(/^https:\/\//, `https://${token}@`);
-}
-
 export async function push(folderPath: string, token: string | null, remoteUrl: string): Promise<{ ok: boolean; output: string }> {
-  const target = token ? withTokenEmbedded(remoteUrl, token) : "origin";
-  return runGit(["push", target, "HEAD"], folderPath);
+  // The address is used as it is; the token (if any) travels separately, see
+  // tokenCredentialArgs above.
+  const target = token ? remoteUrl : "origin";
+  return runGit(["push", target, "HEAD"], folderPath, token);
 }
 
 const CONFLICT_PATTERN = /CONFLICT|Automatic merge failed/i;
@@ -98,7 +136,7 @@ export async function pull(
   remoteUrl: string,
   contributorName: string | null
 ): Promise<{ ok: boolean; output: string }> {
-  const target = token ? withTokenEmbedded(remoteUrl, token) : "origin";
+  const target = token ? remoteUrl : "origin";
   // --no-rebase: always a merge, regardless of this machine's own git config
   // (pull.rebase) — the recovery step below assumes a merge is in progress.
   // "HEAD" as the thing to pull (rather than nothing, or a guessed branch
@@ -113,7 +151,8 @@ export async function pull(
   // identity exactly like any other commit — see gitIdentityArgs above.
   const result = await runGit(
     [...gitIdentityArgs(contributorName), "pull", "--no-rebase", "--allow-unrelated-histories", target, "HEAD"],
-    folderPath
+    folderPath,
+    token
   );
 
   if (!result.ok && EMPTY_REMOTE_PATTERN.test(result.output)) {

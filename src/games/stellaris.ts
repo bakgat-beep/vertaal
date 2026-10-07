@@ -2,6 +2,8 @@ import { join, documentDir } from "@tauri-apps/api/path";
 import type { GameAdapter } from "./types";
 import { findModLocRelativeParts } from "../import";
 import { modFolderName } from "../fileNames";
+import { escapeDescriptorString } from "../modExport";
+import { renameLangSuffix } from "./langPaths";
 
 const NATIVE_LANGUAGES: Record<string, string> = {
   "brazilian portuguese": "braz_por",
@@ -50,11 +52,11 @@ function extractSubcategory(fullPath: string): string {
     return parts[1];
   }
   const fileName = parts[parts.length - 1];
-  const stripped = fileName.replace(/_l_english\.yml$/i, "");
+  const stripped = fileName.replace(/_l_[a-z_]+\.yml$/i, "");
   return stripped || "general";
 }
 
-function toModRelativePath(fullPath: string, languageCode: string): string | null {
+function toModRelativePath(fullPath: string, languageCode: string, sourceLanguage: string = "english"): string | null {
   const marker = "\\localisation\\";
   const idx = fullPath.indexOf(marker);
   if (idx === -1) return null;
@@ -62,19 +64,19 @@ function toModRelativePath(fullPath: string, languageCode: string): string | nul
   const parts = afterLoc.split("\\");
   let fileName = parts.pop() as string;
 
-  const englishFolderIndex = parts.indexOf("english");
-  if (englishFolderIndex !== -1 && languageCode !== "english") {
-    parts[englishFolderIndex] = languageCode;
+  const sourceFolderIndex = parts.indexOf(sourceLanguage);
+  if (sourceFolderIndex !== -1 && languageCode !== sourceLanguage) {
+    parts[sourceFolderIndex] = languageCode;
   }
-  fileName = fileName.replace(/_l_english\.yml$/i, `_l_${languageCode}.yml`);
+  fileName = renameLangSuffix(fileName, sourceLanguage, languageCode);
 
   return ["localisation", "replace", fileName].join("\\");
 }
 
-function toModExportRelativePath(fullPath: string, languageCode: string): string | null {
+function toModExportRelativePath(fullPath: string, languageCode: string, sourceLanguage: string = "english"): string | null {
   const parts = findModLocRelativeParts(fullPath);
   if (!parts) return null;
-  const fileName = (parts.pop() as string).replace(/_l_english\.yml$/i, `_l_${languageCode}.yml`);
+  const fileName = renameLangSuffix(parts.pop() as string, sourceLanguage, languageCode);
   return ["localisation", "replace", fileName].join("\\");
 }
 
@@ -105,9 +107,9 @@ export const stellarisAdapter: GameAdapter = {
   }),
 
   buildDescriptor: (modName) =>
-    `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${modName}"\nsupported_version="v4.*"\n`,
+    `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${escapeDescriptorString(modName)}"\nsupported_version="v4.*"\n`,
   buildOuterModPointer: (modName, modRootAbsolutePath) => ({
     fileName: `${modFolderName(modName)}.mod`,
-content: `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${modName}"\nsupported_version="v4.*"\npath="${toUnixPath(modRootAbsolutePath)}"\n`,
+content: `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${escapeDescriptorString(modName)}"\nsupported_version="v4.*"\npath="${toUnixPath(modRootAbsolutePath)}"\n`,
   }),
 };

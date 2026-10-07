@@ -1,4 +1,5 @@
 import type { TranslationProvider, TranslationRequest, TranslationResult, ProviderConfig } from "./types";
+import { responseError } from "./errors";
 
 // Unlike every other provider, this one deliberately does NOT go through
 // Tauri's HTTP plugin. Google's endpoint (see below) blocks anything that
@@ -43,13 +44,15 @@ const LANGUAGE_CODE_MAP: Record<string, string> = {
   // name-based ones above.
   braz_por: "pt",
   simp_chinese: "zh-CN",
+  "simplified chinese": "zh-CN",
+  "brazilian portuguese": "pt",
 };
 
 function toGoogleCode(language: string): string {
   return LANGUAGE_CODE_MAP[language.toLowerCase()] ?? language.toLowerCase();
 }
 
-async function translate(request: TranslationRequest, _config: ProviderConfig): Promise<TranslationResult> {
+async function translate(request: TranslationRequest, config: ProviderConfig): Promise<TranslationResult> {
   const sourceCode = toGoogleCode(request.sourceLanguage);
   const targetCode = toGoogleCode(request.targetLanguage);
 
@@ -61,9 +64,9 @@ async function translate(request: TranslationRequest, _config: ProviderConfig): 
     q: request.text,
   });
 
-  const response = await fetch(`${ENDPOINT}?${params.toString()}`);
+  const response = await fetch(`${ENDPOINT}?${params.toString()}`, { signal: config.signal });
   if (!response.ok) {
-    throw new Error(`Google Translate request failed: ${response.status} ${response.statusText}`);
+    throw responseError("Google Translate", response.status, response.statusText);
   }
 
   const data = await response.json();
@@ -94,6 +97,9 @@ export const googleTranslateProvider: TranslationProvider = {
   requiresModel: false,
   supportsGlossary: false,
   supportsBatch: false,
+  requiresApiKey: false, // the free endpoint takes no key
+  supportsCustomBaseUrl: false,
+  isLlm: false,
   translate,
   detectAvailability,
 };

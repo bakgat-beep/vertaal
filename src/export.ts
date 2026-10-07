@@ -18,7 +18,7 @@ import { SQL_OUTDATED, SQL_DRAFT } from "./statusFilters";
 // (Flagged strings are deliberately held back: a flag means "needs another
 // look", so it shouldn't ship until the flag is cleared.)
 export const SQL_EXPORTABLE =
-  "t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != '' AND COALESCE(t.flagged, 0) = 0";
+  "s.removed_at IS NULL AND t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != '' AND COALESCE(t.flagged, 0) = 0";
 
 // Numbers for the "Ready to export?" dialog. `confirmed` is what will really
 // be written; `flagged` is confirmed strings being held back by their flag;
@@ -29,11 +29,11 @@ export async function getExportPreflight(project: Project): Promise<ExportPrefli
   const db = await getDb();
   const result = (await db.select(
     `SELECT
-       (SELECT COUNT(*) FROM strings WHERE game_id = $1) AS total,
+       (SELECT COUNT(*) FROM strings WHERE game_id = $1 AND removed_at IS NULL) AS total,
        COALESCE(SUM(CASE WHEN ${SQL_EXPORTABLE} THEN 1 ELSE 0 END), 0) AS confirmed,
        COALESCE(SUM(CASE WHEN ${SQL_EXPORTABLE} AND ${SQL_OUTDATED} THEN 1 ELSE 0 END), 0) AS outdated,
        COALESCE(SUM(CASE WHEN t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
-         AND t.flagged = 1 THEN 1 ELSE 0 END), 0) AS flagged,
+         AND t.flagged = 1 AND s.removed_at IS NULL THEN 1 ELSE 0 END), 0) AS flagged,
        COALESCE(SUM(CASE WHEN ${SQL_DRAFT} AND TRIM(COALESCE(t.translated_text, '')) != '' THEN 1 ELSE 0 END), 0) AS drafts
      FROM strings s
      JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
@@ -131,7 +131,7 @@ export async function exportMod(currentProject: Project, onStatus: (msg: string)
 
     const byFile: Record<string, { key: string; translated_text: string }[]> = {};
     for (const row of translated) {
-      const relPath = gm.toModRelativePath(row.file_path, languageCode);
+      const relPath = gm.toModRelativePath(row.file_path, languageCode, currentProject.source_language);
       if (!relPath) continue;
       if (!byFile[relPath]) byFile[relPath] = [];
       byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
@@ -230,7 +230,7 @@ export async function exportModCompanion(
 
     const byFile: Record<string, { key: string; translated_text: string }[]> = {};
     for (const row of translated) {
-      const relPath = gm.toModExportRelativePath(row.file_path, languageCode);
+      const relPath = gm.toModExportRelativePath(row.file_path, languageCode, currentProject.source_language);
       if (!relPath) continue;
       if (!byFile[relPath]) byFile[relPath] = [];
       byFile[relPath].push({ key: row.key, translated_text: row.translated_text });

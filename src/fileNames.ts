@@ -13,10 +13,32 @@ export function safeFileName(name: string): string {
   return cleaned === "" ? "export" : cleaned;
 }
 
+// A small, fixed fingerprint of a piece of text, written as 6 letters/digits.
+// (FNV-1a: the same text always gives the same result, on every computer.)
+function shortFingerprint(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0").slice(0, 6);
+}
+
 // Turns a contributor's display name into the piece of a file name that
-// identifies them, e.g. "Michi van Wyk" -> "michi-van-wyk".
+// identifies them, e.g. "Michi van Wyk" -> "michi-van-wyk-3fa91c".
+//
+// Each contributor must get a file name of their own: the whole collaboration
+// design depends on nobody ever writing to someone else's file. Tidying a name
+// into a file name loses detail ("Jane Doe", "Jane-Doe", "jane  doe" and
+// "JANE DOE" would all tidy to "jane-doe"), so unless the name is ALREADY in
+// that tidy form (only lower-case letters, digits and single hyphens), a short
+// fingerprint of the exact name is added at the end. Different names then
+// always get different files, and the same name always gets the same file.
 export function contributorSlug(contributorName: string): string {
-  return safeFileName(contributorName.toLowerCase().replace(/\s+/g, "-"));
+  const name = contributorName.trim();
+  const tidy = safeFileName(name.toLowerCase().replace(/\s+/g, "-"));
+  if (/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) return tidy;
+  return `${tidy}-${shortFingerprint(name)}`;
 }
 
 // The one place that decides what a project's shareable JSON file is called,

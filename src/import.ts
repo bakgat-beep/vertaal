@@ -108,6 +108,27 @@ export async function importProjectFolder(
 
   try {
     const db = await getDb();
+
+    // Older versions kept the strings of every source language under one id.
+    // If ANOTHER project already shares this project's id but reads a
+    // different source language, importing would overwrite that project's
+    // source texts, so stop before anything is written. (Projects made now
+    // get their own id per source language - see projectIds.ts.)
+    const sharing = (await db.select(
+      "SELECT source_language FROM projects WHERE game_id = $1 AND id != $2 AND LOWER(source_language) != LOWER($3)",
+      [currentProject.game_id, currentProject.id, currentProject.source_language]
+    )) as { source_language: string }[];
+    if (sharing.length > 0) {
+      return {
+        status: "error",
+        error:
+          `Another project for this same game already reads its text from ${sharing[0].source_language}, ` +
+          `while this one reads ${currentProject.source_language}. They would overwrite each other's source ` +
+          "texts, so nothing was imported. Create a new project (it will be kept separate automatically) " +
+          "instead of reusing this one.",
+      };
+    }
+
     const gamesDisplayName = isMod ? `${gm.displayName} — ${currentProject.source_mod_name ?? "Mod"}` : gm.displayName;
     await db.execute("INSERT OR REPLACE INTO games (game_id, display_name, detected_version) VALUES ($1, $2, $3)", [
       currentProject.game_id,

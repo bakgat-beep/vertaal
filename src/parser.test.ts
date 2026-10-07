@@ -258,3 +258,27 @@ describe("restoreTokens with $ characters in game codes", () => {
     expect(restoreTokens("x __TOKEN_0__ y __TOKEN_1__ z", ["$&", "$`"])).toBe("x $& y $` z");
   });
 });
+describe("parseLocFile - escaped quotes and Windows line endings", () => {
+  it("keeps the whole text when an escaped quote is followed by a # code", () => {
+    const result = parseLocFile(' k1: "He said \\"#bold hi#!\\" ok"');
+    expect(result).toEqual([{ key: "k1", text: 'He said \\"#bold hi#!\\" ok' }]);
+  });
+
+  it("still ignores a real trailing comment after the closing quote", () => {
+    const result = parseLocFile(' k1: "Plain text" # a note');
+    expect(result).toEqual([{ key: "k1", text: "Plain text" }]);
+  });
+
+  it("still tolerates a bare (unescaped) quote inside the text", () => {
+    const result = parseLocFile(' k1: "He said "hi" ok"');
+    expect(result).toEqual([{ key: "k1", text: 'He said "hi" ok' }]);
+  });
+
+  it("reads a Windows (CRLF) line that ends in a trailing comment", () => {
+    const result = parseLocFile('l_english:\r\n k1: "Text" # note\r\n k2: "Other"\r\n');
+    expect(result).toEqual([
+      { key: "k1", text: "Text" },
+      { key: "k2", text: "Other" },
+    ]);
+  });
+});

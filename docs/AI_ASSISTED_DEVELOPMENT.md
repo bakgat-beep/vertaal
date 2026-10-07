@@ -47,6 +47,16 @@ One important thing to understand about this: **when Claude clones the repo itse
 - **Verify before claiming.** Claude should run the test suite (`npm test`) and type-checker (`npx tsc --noEmit`) after changes that touch tested code, check actual file contents before describing them, and search for facts (API names, documented file formats, Steam folder names) rather than guess — and say plainly when something is a best-effort assumption rather than a confirmed fact.
 - **Explain what changed and why**, in plain language, not just hand over code.
 
+## Rules that keep the project safe
+
+These are worth repeating at the start of a session, because an AI assistant will not know them unless told:
+
+- **The GitHub copy is the authoritative version.** Claude works in its own clone and usually cannot (and should not) push to your repository. It commits locally and sends you the changed files; you paste them into your own copy and push from there.
+- **Prove it, don't guess.** Ask Claude to run the tests and the type-check, and to look up outside facts (file formats, language lists) instead of recalling them.
+- **Show a new test can fail.** A good test fails when the fix it protects is removed; ask Claude to demonstrate that.
+- **Never auto-confirm translations**, and never weaken the checks that protect game syntax.
+- **Keep a list of deferred work** in [docs/FUTURE_WORK.md](FUTURE_WORK.md), so ideas and known limits survive between sessions and are available to future code reviews.
+
 ## Starting a new conversation: prompt template
 
 Copy this, fill in the bracketed parts, and paste it as your first message:

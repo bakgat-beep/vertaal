@@ -2,6 +2,8 @@ import { join, documentDir } from "@tauri-apps/api/path";
 import type { GameAdapter } from "./types";
 import { findModLocRelativeParts } from "../import";
 import { modFolderName } from "../fileNames";
+import { escapeDescriptorString } from "../modExport";
+import { renameLangSuffix } from "./langPaths";
 
 const NATIVE_LANGUAGES: Record<string, string> = {
   french: "french",
@@ -39,11 +41,11 @@ function extractSubcategory(fullPath: string): string {
     return parts[1];
   }
   const fileName = parts[parts.length - 1];
-  const stripped = fileName.replace(/_l_english\.yml$/i, "");
+  const stripped = fileName.replace(/_l_[a-z_]+\.yml$/i, "");
   return stripped || "general";
 }
 
-function toModRelativePath(fullPath: string, languageCode: string): string | null {
+function toModRelativePath(fullPath: string, languageCode: string, sourceLanguage: string = "english"): string | null {
   const marker = "\\localization\\";
   const idx = fullPath.indexOf(marker);
   if (idx === -1) return null;
@@ -51,18 +53,18 @@ function toModRelativePath(fullPath: string, languageCode: string): string | nul
   const parts = afterLoc.split("\\");
   const fileName = parts.pop() as string;
   const subfolders = parts.slice(1); // drop the language folder (parts[0]); preserve any real subfolder after it
-  const renamedFileName = fileName.replace(/_l_english\.yml$/i, `_l_${languageCode}.yml`);
+  const renamedFileName = renameLangSuffix(fileName, sourceLanguage, languageCode);
 
   return ["localization", "replace", languageCode, ...subfolders, renamedFileName].join("\\");
 }
 
-function toModExportRelativePath(fullPath: string, languageCode: string): string | null {
+function toModExportRelativePath(fullPath: string, languageCode: string, sourceLanguage: string = "english"): string | null {
   const rawParts = findModLocRelativeParts(fullPath);
   if (!rawParts) return null;
   const parts = rawParts.slice(1); // drop the "localization" segment; it's hardcoded below
   const fileName = parts.pop() as string;
   const subfolders = parts.slice(1); // drop the language folder (parts[0]); preserve any real subfolder after it
-  const renamedFileName = fileName.replace(/_l_english\.yml$/i, `_l_${languageCode}.yml`);
+  const renamedFileName = renameLangSuffix(fileName, sourceLanguage, languageCode);
 
   return ["localization", "replace", languageCode, ...subfolders, renamedFileName].join("\\");
 }
@@ -91,9 +93,9 @@ export const ck3Adapter: GameAdapter = {
     relationships: [],
     game_custom_data: {},
   }),
-  buildDescriptor: (modName) => `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${modName}"\n`,
+  buildDescriptor: (modName) => `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${escapeDescriptorString(modName)}"\n`,
   buildOuterModPointer: (modName, modRootAbsolutePath) => ({
     fileName: `${modFolderName(modName)}.mod`,
-    content: `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${modName}"\nsupported_version="1.*"\npath="${toUnixPath(modRootAbsolutePath)}"\n`,
+    content: `version="0.1.0"\ntags={\n\t"Translation"\n}\nname="${escapeDescriptorString(modName)}"\nsupported_version="1.*"\npath="${toUnixPath(modRootAbsolutePath)}"\n`,
   }),
 };

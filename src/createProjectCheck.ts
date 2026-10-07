@@ -10,11 +10,21 @@ export interface CreateProjectInputs {
   checkingPath: boolean;
   projectType: "vanilla" | "mod";
   sourceModName: string;
+  // The language the game text is read from (a language code such as
+  // "english" or "french"), and, when the chosen target is one of the game's
+  // own languages, that language's code. Used to stop a project translating a
+  // language into itself.
+  sourceLanguage?: string;
+  nativeTargetCode?: string | null;
 }
 
 export function createProjectBlocker(i: CreateProjectInputs): string | null {
   if (i.selectedGameId === null) return "Choose a game above.";
   if (i.effectiveTargetLanguage.length === 0) return "Type the name of the language you're translating into.";
+  const source = (i.sourceLanguage ?? "").toLowerCase();
+  if (source !== "" && (i.effectiveTargetLanguage.toLowerCase() === source || i.nativeTargetCode === source)) {
+    return "The target language can't be the same as the source language - choose a different target.";
+  }
   if (i.checkingPath) return "Still checking the folder — one moment.";
   if (i.installPathValid === null) {
     return i.projectType === "mod"

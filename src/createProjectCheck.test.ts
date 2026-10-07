@@ -45,4 +45,18 @@ describe("createProjectBlocker", () => {
     const r = createProjectBlocker({ ...ready, selectedGameId: null, effectiveTargetLanguage: "", installPathValid: false });
     expect(r).toMatch(/Choose a game/);
   });
+
+  it("refuses a target that is the same as the source language", () => {
+    expect(createProjectBlocker({ ...ready, sourceLanguage: "english", effectiveTargetLanguage: "english" })).toMatch(/same as the source/);
+  });
+
+  it("refuses a target that is the game's own language slot for the source (e.g. French from French)", () => {
+    expect(
+      createProjectBlocker({ ...ready, sourceLanguage: "french", effectiveTargetLanguage: "french", nativeTargetCode: "french" })
+    ).toMatch(/same as the source/);
+  });
+
+  it("allows a different source and target", () => {
+    expect(createProjectBlocker({ ...ready, sourceLanguage: "french", nativeTargetCode: "german", effectiveTargetLanguage: "german" })).toBeNull();
+  });
 });

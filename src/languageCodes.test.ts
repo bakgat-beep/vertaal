@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { languageDisplayName } from "./languageCodes";
+import { languageDisplayName, languageIsoCode } from "./languagecodes";
 
 describe("languageDisplayName", () => {
   it("capitalises an ordinary language value as-is", () => {
@@ -22,5 +22,21 @@ describe("languageDisplayName", () => {
 
   it("handles a multi-word value with no override sensibly", () => {
     expect(languageDisplayName("chinese_traditional")).toBe("Chinese Traditional");
+  });
+});
+describe("languageIsoCode", () => {
+  it("knows the codes for the languages and Paradox folder names Vertaal uses", () => {
+    expect(languageIsoCode("afrikaans")).toBe("af");
+    expect(languageIsoCode("simp_chinese")).toBe("zh");
+    expect(languageIsoCode("braz_por")).toBe("pt");
+    expect(languageIsoCode("French")).toBe("fr");
+  });
+  it("passes a code that was typed in straight through, and says null for an unknown name", () => {
+    expect(languageIsoCode("sw")).toBe("sw");
+    expect(languageIsoCode("klingon language")).toBeNull();
+  });
+  it("shows a bare code as the language it stands for", () => {
+    expect(languageDisplayName("sw")).toBe("Swahili");
+    expect(languageDisplayName("af")).toBe("Afrikaans");
   });
 });

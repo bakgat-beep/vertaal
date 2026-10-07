@@ -1,4 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { makeLatestGuard } from "./latestOnly";
+import { buildProjectGameId } from "./projectIds";
+import { languageDisplayName } from "./languageCodes";
 import { open } from "@tauri-apps/plugin-dialog";
 import { createProjectBlocker } from "./createProjectCheck";
 import { getDb } from "./db";
@@ -12,6 +15,7 @@ import { TRANSLATION_PROVIDERS, providerOptionLabel } from "./providers";
 import { getProviderCredentials, setProviderCredentials } from "./providers/credentials";
 import { readModDescriptor, slugifyModName } from "./modDescriptor";
 import { detectSteamGameFolder } from "./steamDetect";
+import { Icon } from "./Icon";
 
 const STEAM_FOLDER_NAMES: Record<string, string> = {
   eu5: "Europa Universalis V",
@@ -59,20 +63,25 @@ export function describeDuplicateProject(
 // A broad, commonly-useful set of target languages — covers most of what
 // the AI providers support plus the world's most-spoken languages. Anything
 // not listed here is still reachable via "Custom…".
-const TARGET_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
+export const TARGET_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
   { value: "afrikaans", label: "Afrikaans" },
   { value: "dutch", label: "Dutch" },
   { value: "german", label: "German" },
   { value: "french", label: "French" },
   { value: "spanish", label: "Spanish" },
   { value: "portuguese", label: "Portuguese" },
+  // The game has its own Brazilian Portuguese and Simplified Chinese language
+  // slots, so these two values are the game's own language names (see each
+  // game's nativeLanguages) - the export then replaces that slot in the game
+  // rather than the source language's one.
+  { value: "brazilian portuguese", label: "Portuguese (Brazilian)" },
   { value: "italian", label: "Italian" },
   { value: "polish", label: "Polish" },
   { value: "russian", label: "Russian" },
   { value: "turkish", label: "Turkish" },
   { value: "arabic", label: "Arabic" },
   { value: "hindi", label: "Hindi" },
-  { value: "chinese", label: "Chinese" },
+  { value: "simplified chinese", label: "Chinese (Simplified)" },
   { value: "japanese", label: "Japanese" },
   { value: "korean", label: "Korean" },
   { value: "swahili", label: "Swahili" },
@@ -81,11 +90,16 @@ const TARGET_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
 ];
 
 export default function NewProjectWizard({ onProjectSelected }: Props) {
+  const detectGuard = useRef(makeLatestGuard());
   const [projectType, setProjectType] = useState<"vanilla" | "mod">("vanilla");
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [sourceLanguage, setSourceLanguage] = useState("english");
   const [targetLanguage, setTargetLanguage] = useState("afrikaans");
   const [customTargetLanguage, setCustomTargetLanguage] = useState("");
+  // Translation services (DeepL, Google, ...) identify a language by a short
+  // code ("sw", "zu"), not by its name. The built-in list of languages already
+  // knows its codes; for a language typed in by hand the person can give one.
+  const [customTargetCode, setCustomTargetCode] = useState("");
   const [installPath, setInstallPath] = useState("");
   const [installPathValid, setInstallPathValid] = useState<boolean | null>(null);
   const [checkingPath, setCheckingPath] = useState(false);
@@ -116,18 +130,26 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
 
   const [duplicateProjectNotice, setDuplicateProjectNotice] = useState("");
 
-  useEffect(() => {
-    detectInstalledModels().then((models) => {
+  // Asks Ollama which models it has, at the address given (blank = this computer).
+  function redetectModels(address: string | null) {
+    setCheckingModels(true);
+    detectInstalledModels(address).then((models) => {
       setAvailableModels(models);
       if (models.length > 0) setSelectedModel(models[0].name);
       setCheckingModels(false);
     });
+  }
+
+  useEffect(() => {
+    // An Ollama address saved earlier (a project made before, on another computer) is used first.
+    getProviderCredentials("ollama").then((creds) => redetectModels(creds.baseUrl));
   }, []);
 
   useEffect(() => {
     if (!selectedGameId) return;
     const newGm = GAME_ADAPTERS[selectedGameId];
     setSourceLanguage(newGm.sourceLanguage);
+    detectGuard.current.next(); // cancels any search still running for the previous game
     setInstallPath("");
     setInstallPathValid(null);
     setSourceModName("");
@@ -141,6 +163,7 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
   }, [selectedGameId]);
 
   useEffect(() => {
+    detectGuard.current.next(); // cancels any search still running
     setInstallPath("");
     setInstallPathValid(null);
     setSourceModName("");
@@ -156,23 +179,32 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
   async function tryAutoDetectInstallPath(gameId: string, sourceLang: string) {
     const folderName = STEAM_FOLDER_NAMES[gameId];
     if (!folderName) return;
+    // The search can take a moment. If the person switches game, switches
+    // between vanilla and mod, or picks a folder by hand while it runs, its
+    // result is out of date and must not be filled in (see latestOnly.ts).
+    const run = detectGuard.current.next();
     setAutoDetectNote("Checking your Steam library...");
     const found = await detectSteamGameFolder(folderName);
+    if (!detectGuard.current.isCurrent(run)) return;
     if (!found) {
       setAutoDetectNote("");
       return;
     }
     setCheckingPath(true);
     const valid = await validateInstallPath(found, sourceLang);
+    if (!detectGuard.current.isCurrent(run)) {
+      setCheckingPath(false);
+      return;
+    }
     setInstallPath(found);
     setInstallPathValid(valid);
     setCheckingPath(false);
     setAutoDetectNote(valid ? "Auto-detected from your Steam library — Browse to change it." : "");
   }
 
-  // Load any previously-saved credentials whenever a non-local provider is picked.
+  // Load any previously-saved credentials (key and/or address) whenever a provider is picked.
   useEffect(() => {
-    if (!providerId || providerId === "ollama") return;
+    if (!providerId) return;
     getProviderCredentials(providerId).then((creds) => {
       setHasApiKey(!!creds.apiKey);
       setBaseUrl(creds.baseUrl ?? "");
@@ -183,6 +215,7 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
   async function browseInstallPath() {
     const picked = await open({ directory: true, multiple: false });
     if (!picked) return;
+    detectGuard.current.next(); // a hand-picked folder beats a search still running
     setInstallPath(picked as string);
     setAutoDetectNote("");
     setCheckingPath(true);
@@ -202,13 +235,18 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
   const gm = selectedGameId ? GAME_ADAPTERS[selectedGameId] : null;
   const sourceLanguageOptions: { code: string; label: string }[] = gm
     ? [
-        { code: gm.sourceLanguage, label: "English" },
+        { code: gm.sourceLanguage, label: languageDisplayName(gm.sourceLanguage) },
         ...Object.entries(gm.nativeLanguages).map(([label, code]) => ({ code, label: titleCase(label) })),
       ]
     : [{ code: "english", label: "English" }];
 
-  const effectiveTargetLanguage = targetLanguage === "custom" ? customTargetLanguage.trim() : targetLanguage;
+  // A typed-in language is stored in lower case with single spaces, like the
+  // list's own values, so "Zulu" and "zulu" can never become two projects.
+  const effectiveTargetLanguage =
+    targetLanguage === "custom" ? customTargetLanguage.trim().replace(/\s+/g, " ").toLowerCase() : targetLanguage;
   const createBlocker = createProjectBlocker({
+    sourceLanguage,
+    nativeTargetCode: gm?.nativeLanguages[effectiveTargetLanguage] ?? null,
     selectedGameId,
     effectiveTargetLanguage,
     installPathValid,
@@ -224,7 +262,14 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
     if (!canCreate || !selectedGameId) return;
 
     const isMod = projectType === "mod";
-    const finalGameId = isMod ? `${selectedGameId}:mod:${slugifyModName(sourceModName)}` : selectedGameId;
+    // A project reading a source language other than the game's default gets
+    // its own id (and so its own strings) - see projectIds.ts.
+    const finalGameId = buildProjectGameId({
+      gameId: selectedGameId,
+      modSlug: isMod ? slugifyModName(sourceModName) : null,
+      sourceLanguage,
+      defaultSourceLanguage: GAME_ADAPTERS[selectedGameId].sourceLanguage,
+    });
     const db = await getDb();
 
     // Checked directly against the database by the exact identifier this
@@ -257,8 +302,8 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
     await db.execute(
       `INSERT INTO projects
          (game_id, source_language, target_language, mod_name, install_path, ai_model, translation_provider_id,
-          project_type, parent_game_id, source_mod_name, source_mod_identifier)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          project_type, parent_game_id, source_mod_name, source_mod_identifier, target_language_code_override)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         finalGameId,
         sourceLanguage,
@@ -271,10 +316,11 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
         selectedGameId,
         isMod ? sourceModName.trim() : null,
         isMod ? sourceModIdentifier : null,
+        targetLanguage === "custom" && customTargetCode.trim() ? customTargetCode.trim() : null,
       ]
     );
 
-    if (providerId && providerId !== "ollama" && (apiKeyInput.trim() || baseUrl.trim())) {
+    if (provider && (provider.requiresApiKey || provider.supportsCustomBaseUrl) && (apiKeyInput.trim() || baseUrl.trim())) {
       // A blank key box means "keep any saved key" (undefined), never "delete it".
       await setProviderCredentials(providerId, apiKeyInput.trim() || undefined, baseUrl.trim() || null);
     }
@@ -291,7 +337,8 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
 
   return (
     <>
-      <h3>Choose a game</h3>
+      <section className="wizard-section">
+      <h3 className="wizard-step"><span className="wizard-step-number">1</span>Choose a game</h3>
       <div className="game-card-grid">
         {availableGames.map((game) => (
           <div
@@ -311,17 +358,28 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
 
       <div className="form-row">
         <div className="form-label">Translating</div>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button style={{ opacity: projectType === "vanilla" ? 1 : 0.5 }} onClick={() => setProjectType("vanilla")}>
-            {projectType === "vanilla" ? "✓ " : ""}Vanilla (Base Game)
+        <div className="segmented">
+          <button
+            className={projectType === "vanilla" ? "segmented-active" : ""}
+            aria-pressed={projectType === "vanilla"}
+            onClick={() => setProjectType("vanilla")}
+          >
+            {projectType === "vanilla" && <Icon name="check" size={12} />} Vanilla (Base Game)
           </button>
-          <button style={{ opacity: projectType === "mod" ? 1 : 0.5 }} onClick={() => setProjectType("mod")}>
-            {projectType === "mod" ? "✓ " : ""}Mod
+          <button
+            className={projectType === "mod" ? "segmented-active" : ""}
+            aria-pressed={projectType === "mod"}
+            onClick={() => setProjectType("mod")}
+          >
+            {projectType === "mod" && <Icon name="check" size={12} />} Mod
           </button>
         </div>
       </div>
 
-      <h3>Set up languages &amp; files</h3>
+      </section>
+
+      <section className="wizard-section">
+      <h3 className="wizard-step"><span className="wizard-step-number">2</span>Set up languages &amp; files</h3>
 
       <div className="form-row">
         <div className="form-label">Source language</div>
@@ -361,6 +419,16 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
               style={{ marginLeft: "0.5rem", width: "150px" }}
             />
           )}
+          {targetLanguage === "custom" && (
+            <input
+              type="text"
+              value={customTargetCode}
+              onChange={(e) => setCustomTargetCode(e.target.value)}
+              placeholder="Code (e.g. sw) - optional"
+              title="The short language code that AI/translation services use for this language, such as sw for Swahili. Needed for DeepL, Google Translate and LibreTranslate when the language isn't in the list; you can also add it later in Project Settings."
+              style={{ marginLeft: "0.5rem", width: "190px" }}
+            />
+          )}
         </div>
       </div>
 
@@ -379,10 +447,10 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
             </div>
           )}
           {!checkingPath && installPathValid === true && (
-            <div className="validation-line validation-ok">✓ Localisation files detected</div>
+            <div className="validation-line validation-ok"><Icon name="check" size={12} /> Localisation files detected</div>
           )}
           {!checkingPath && installPathValid === false && (
-            <div className="validation-line validation-bad">✕ No localisation files found in this folder</div>
+            <div className="validation-line validation-bad"><Icon name="cross" size={12} /> No localisation files found in this folder</div>
           )}
           {!checkingPath && autoDetectNote && (
             <div className="validation-line" style={{ color: "var(--text-dim)" }}>{autoDetectNote}</div>
@@ -429,7 +497,10 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
         />
       </div>
 
-      <h3>AI assist</h3>
+      </section>
+
+      <section className="wizard-section">
+      <h3 className="wizard-step"><span className="wizard-step-number">3</span>AI assist <span className="wizard-optional">optional</span></h3>
 
       <div className="form-row">
         <div className="form-label">Translation provider</div>
@@ -442,6 +513,20 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
           <option value="">None — manual translation only</option>
         </select>
       </div>
+
+      {providerId === "ollama" && (
+        <div className="form-row">
+          <div className="form-label">Ollama address</div>
+          <input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            onBlur={() => redetectModels(baseUrl.trim() || null)}
+            placeholder="Leave blank for this computer (http://localhost:11434)"
+            title="Only change this if Ollama is running on another computer. The list of models below is refreshed when you leave this box."
+            style={{ flexGrow: 1 }}
+          />
+        </div>
+      )}
 
       {providerId === "ollama" && (
         <div className="form-row">
@@ -479,6 +564,7 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
               style={{ flexGrow: 1 }}
             />
           </div>
+          {provider?.requiresApiKey && (
           <div className="form-row">
             <div className="form-label">API key</div>
             <div style={{ flexGrow: 1, display: "flex", gap: "0.5rem", alignItems: "center" }}>
@@ -489,18 +575,24 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
                 placeholder={hasApiKey ? "Saved (enter a new one to replace)" : "API key"}
                 style={{ flexGrow: 1 }}
               />
-              {hasApiKey && <span style={{ color: "var(--status-confirmed)", fontSize: "0.8rem" }}>✓ Saved</span>}
+              {hasApiKey && <span style={{ color: "var(--status-confirmed)", fontSize: "0.8rem" }}><Icon name="check" size={12} /> Saved</span>}
             </div>
           </div>
+          )}
+          {provider?.supportsCustomBaseUrl && (
           <div className="form-row">
             <div className="form-label">Base URL</div>
             <input
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="Only needed for self-hosted/OpenAI-compatible endpoints"
+              placeholder="Leave blank for OpenAI; fill in for a self-hosted server"
               style={{ flexGrow: 1 }}
             />
           </div>
+          )}
+          {provider && !provider.requiresApiKey && !provider.supportsCustomBaseUrl && (
+            <p style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>{provider.displayName} needs no API key or address.</p>
+          )}
           {provider && !provider.supportsGlossary && (
             <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
               Note: {provider.displayName} does not apply your glossary rules automatically.
@@ -542,12 +634,14 @@ export default function NewProjectWizard({ onProjectSelected }: Props) {
         </p>
       )}
 
-      <div className="welcome-footer">
+      </section>
+
+      <div className="welcome-footer wizard-footer">
         <span style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
-          You can change these later in project settings.
+          The game, languages and folder are fixed once the project is created; the translation service, model and keys can be changed later in project settings.
         </span>
         <button className="build-mod-button" onClick={handleCreateProject} disabled={!canCreate}>
-          Create Project →
+          Create Project
         </button>
       </div>
       {createBlocker && (

@@ -160,3 +160,37 @@ it("a local edit made late in the day (SQLite timestamp format) is not overwritt
   expect(row.translated_text).toBe("My newer local wording"); // NOT overwritten
   expect(result.skippedLocalNewer).toBeGreaterThanOrEqual(1);
 });
+it("an incoming translation with NO timestamp does not replace a local translation whose age is known", async () => {
+  strings.push({ key: "undated", game_id: "eu5", source_text: "Undated" });
+  translations.push({
+    string_key: "undated",
+    game_id: "eu5",
+    target_language: "afrikaans",
+    translated_text: "My own wording",
+    status: "human-confirmed",
+    translated_by: "Me",
+    updated_at: "2026-03-01 10:00:00",
+    source_text_at_translation: null,
+    flagged: 0,
+  });
+  files.set(
+    "/repo/eu5-afrikaans-dave-vertaal-export.json",
+    exportFile([{ string_key: "undated", translated_text: "Unknown-age wording", translated_by: "Dave", updated_at: null as any }])
+  );
+
+  const result = await importAllContributorFiles(project, "/repo");
+  const row = translations.find((t) => t.string_key === "undated")!;
+  expect(row.translated_text).toBe("My own wording");
+  expect(row.updated_at).toBe("2026-03-01 10:00:00"); // and it was not given a fresh timestamp
+  expect(result.skippedLocalNewer).toBeGreaterThanOrEqual(1);
+});
+
+it("an incoming translation with no timestamp is still accepted for a string with no local translation", async () => {
+  strings.push({ key: "brand_new", game_id: "eu5", source_text: "Brand new" });
+  files.set(
+    "/repo/eu5-afrikaans-dave-vertaal-export.json",
+    exportFile([{ string_key: "brand_new", translated_text: "Splinternuut", translated_by: "Dave", updated_at: null as any }])
+  );
+  await importAllContributorFiles(project, "/repo");
+  expect(translations.find((t) => t.string_key === "brand_new")?.translated_text).toBe("Splinternuut");
+});

@@ -39,6 +39,20 @@ export function useBatchTranslation({
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
   const [overnightCount, setOvernightCount] = useState("5000");
   const stopRequestedRef = useRef(false);
+  // Cancels a request that is already waiting for the translation provider
+  // when Stop is pressed (see stopBatch), instead of waiting for its reply.
+  const abortRef = useRef<AbortController | null>(null);
+
+  function beginRun() {
+    stopRequestedRef.current = false;
+    abortRef.current = new AbortController();
+    return abortRef.current.signal;
+  }
+
+  // Said when the provider reports a problem that retrying cannot fix.
+  function permanentProblemMessage(error: string | undefined) {
+    return `Stopped: ${error ?? "the translation service refused the request"}. Nothing was changed on the strings - fix this in Project Settings, then run again.`;
+  }
 
   function reloadCurrentPage() {
     return loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
@@ -57,7 +71,7 @@ export function useBatchTranslation({
       return;
     }
     setBatchRunning(true);
-    stopRequestedRef.current = false;
+    const signal = beginRun();
     setBatchProgress({ done: 0, total: targets.length });
 
     // Wrapped so an unexpected error (not a handled per-string failure —
@@ -73,7 +87,10 @@ export function useBatchTranslation({
       const glossaryTerms = await loadGlossaryTerms(currentProject.game_id, currentProject.target_language);
 
       let succeeded = 0;
+      let skipped = 0;
       let lastError = "";
+      let consecutiveFailures = 0;
+      let stoppedEarly = false; // a message explaining why has already been shown
 
       for (let i = 0; i < targets.length; i++) {
         if (stopRequestedRef.current) break;
@@ -88,18 +105,38 @@ export function useBatchTranslation({
           glossaryTerms,
           undefined,
           undefined,
-          true // batch context: the Google Translate delay is meant for batch runs
+          true, // batch context: the Google Translate delay is meant for batch runs
+          true, // never replace a confirmed or hand-typed translation
+          signal
         );
-        if (result.ok) succeeded++;
-        else lastError = result.error ?? "unknown error";
+        if (result.ok && !result.skipped) {
+          succeeded++;
+          consecutiveFailures = 0;
+        } else if (result.skipped) {
+          skipped++;
+        } else if (result.stopped) {
+          break;
+        } else {
+          lastError = result.error ?? "unknown error";
+          if (result.permanent) {
+            setStatus(permanentProblemMessage(result.error));
+            stoppedEarly = true;
+            break;
+          }
+          if (++consecutiveFailures >= 3) {
+            setStatus(`Stopped: 3 strings in a row failed. Last error: ${lastError}`);
+            stoppedEarly = true;
+            break;
+          }
+        }
         setBatchProgress({ done: i + 1, total: targets.length });
       }
 
       await reloadCurrentPage();
-      setStatus(
-        succeeded === targets.length
-          ? `Page batch complete. ${succeeded} translated.`
-          : `Page batch finished: ${succeeded}/${targets.length} translated. Last error: ${lastError}`
+      if (!stoppedEarly) setStatus(
+        succeeded + skipped === targets.length
+          ? `Page batch complete. ${succeeded} translated${skipped ? `, ${skipped} left alone because you had already confirmed or typed them` : ""}.`
+          : `Page batch finished: ${succeeded}/${targets.length} translated${skipped ? `, ${skipped} left alone (already confirmed or typed)` : ""}. Last error: ${lastError}`
       );
     } catch (err) {
       setStatus(`Page batch stopped unexpectedly: ${err}`);
@@ -205,7 +242,7 @@ export function useBatchTranslation({
     }
 
     setBatchRunning(true);
-    stopRequestedRef.current = false;
+    const signal = beginRun();
     setBatchProgress({ done: 0, total: targetCount });
 
     const db = await getDb();
@@ -213,6 +250,7 @@ export function useBatchTranslation({
 
     try {
       let distinctFailureStreak = 0;
+      let stoppedMessage = "";
 
       // Same one-time-load approach as batchTranslatePage — see the comment
       // there. For an overnight run this matters even more, since it can
@@ -284,17 +322,24 @@ export function useBatchTranslation({
           glossaryTerms,
           undefined,
           undefined,
-          true // batch context: the Google Translate delay is meant for batch runs
+          true, // batch context: the Google Translate delay is meant for batch runs
+          true, // never replace a confirmed or hand-typed translation
+          signal
         );
 
         if (result.ok) {
           distinctFailureStreak = 0;
-          done++;
+          if (!result.skipped) done++;
           setBatchProgress({ done, total: targetCount });
+        } else if (result.stopped) {
+          break;
+        } else if (result.permanent) {
+          stoppedMessage = permanentProblemMessage(result.error);
+          break;
         } else {
           distinctFailureStreak++;
           if (distinctFailureStreak >= 3) {
-            setStatus(`Stopped: 3 different strings failed after retries. Last error: ${result.error ?? "unknown"}`);
+            stoppedMessage = `Stopped: 3 different strings failed after retries. Last error: ${result.error ?? "unknown"}`;
             break;
           }
         }
@@ -303,7 +348,7 @@ export function useBatchTranslation({
       }
 
       await reloadCurrentPage();
-      setStatus(`Overnight batch finished. ${done} strings translated.`);
+      setStatus(stoppedMessage ? `${stoppedMessage} (${done} translated before that.)` : `Overnight batch finished. ${done} strings translated.`);
     } catch (err) {
       setStatus(`Overnight batch stopped unexpectedly after ${done} translated: ${err}`);
     } finally {
@@ -315,7 +360,7 @@ export function useBatchTranslation({
   async function batchRerunAIUnconfirmed() {
     if (!currentProject) return;
     setBatchRunning(true);
-    stopRequestedRef.current = false;
+    const signal = beginRun();
     let done = 0;
 
     try {
@@ -331,8 +376,30 @@ export function useBatchTranslation({
       // they're left out of a re-run.
       const targets = allAiDrafts.filter((r) => !needsNoTranslation(r.source_text));
 
+      if (targets.length === 0) {
+        setStatus("There are no AI drafts to re-run.");
+        return;
+      }
+      // This replaces every AI draft in the project, so say so and ask first,
+      // then take a backup (the overnight batch does the same).
+      const proceed = await confirm(
+        `Re-run the AI on ${targets.length} AI draft(s) across the whole project? Each current AI draft will be replaced by a new one. ` +
+          "Text you typed or confirmed is not touched. A backup is made first."
+      );
+      if (!proceed) {
+        setStatus("Re-run cancelled.");
+        return;
+      }
+      setStatus("Backing up database before starting...");
+      try {
+        await backupDatabase();
+      } catch (err) {
+        setStatus(`Warning: backup failed (${err}). Continuing anyway.`);
+      }
+
       setBatchProgress({ done: 0, total: targets.length });
       let consecutiveFailures = 0;
+      let stoppedMessage = "";
 
       // Same one-time-load approach as the other two batch functions above.
       const glossaryTerms = await loadGlossaryTerms(currentProject.game_id, currentProject.target_language);
@@ -349,23 +416,30 @@ export function useBatchTranslation({
           glossaryTerms,
           undefined,
           undefined,
-          true // batch context: the Google Translate delay is meant for batch runs
+          true, // batch context: the Google Translate delay is meant for batch runs
+          true, // never replace a confirmed or hand-typed translation
+          signal
         );
         if (result.ok) {
           consecutiveFailures = 0;
-          done++;
+          if (!result.skipped) done++;
           setBatchProgress({ done, total: targets.length });
+        } else if (result.stopped) {
+          break;
+        } else if (result.permanent) {
+          stoppedMessage = permanentProblemMessage(result.error);
+          break;
         } else {
           consecutiveFailures++;
           if (consecutiveFailures >= 3) {
-            setStatus("Stopped: 3 failures in a row.");
+            stoppedMessage = `Stopped: 3 failures in a row. Last error: ${result.error ?? "unknown"}`;
             break;
           }
         }
       }
 
       await reloadCurrentPage();
-      setStatus(`Re-run complete. ${done} strings re-translated.`);
+      setStatus(stoppedMessage ? `${stoppedMessage} (${done} re-translated before that.)` : `Re-run complete. ${done} strings re-translated.`);
     } catch (err) {
       setStatus(`Re-run stopped unexpectedly after ${done} translated: ${err}`);
     } finally {
@@ -376,7 +450,8 @@ export function useBatchTranslation({
 
   function stopBatch() {
     stopRequestedRef.current = true;
-    setStatus("Stopping batch after current translation finishes...");
+    abortRef.current?.abort(); // cancels a request still waiting for the provider
+    setStatus("Stopping batch...");
   }
 
   return {

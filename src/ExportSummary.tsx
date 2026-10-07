@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useEscapeKey } from "./hooks/useEscapeKey";
+import { Icon } from "./Icon";
 
 export interface ExportPreflight {
   total: number;
@@ -94,21 +95,21 @@ export default function ExportSummary({
 
             {preflight.outdated > 0 && (
               <p style={{ color: "var(--status-ai-draft)" }}>
-                ⚠ {preflight.outdated.toLocaleString()} of those are confirmed, but the source text has changed
+                <Icon name="warning" size={14} /> {preflight.outdated.toLocaleString()} of those are confirmed, but the source text has changed
                 since (marked "Patch Changed") — they'll still be exported as-is unless you review them first.
               </p>
             )}
 
             {preflight.flagged > 0 && (
               <p style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
-                ⚑ {preflight.flagged.toLocaleString()} confirmed string(s) are flagged, so they will be left out
+                <Icon name="flag" size={14} /> {preflight.flagged.toLocaleString()} confirmed string(s) are flagged, so they will be left out
                 of the export. Clear the flag to include them.
               </p>
             )}
 
             {preflight.drafts > 0 && (
               <p style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
-                ✎ {preflight.drafts.toLocaleString()} string(s) have a translation that isn't confirmed yet (AI drafts
+                <Icon name="pencil" size={14} /> {preflight.drafts.toLocaleString()} string(s) have a translation that isn't confirmed yet (AI drafts
                 or your own unconfirmed edits). Only confirmed strings are exported, so these will be left out until you
                 confirm them.
               </p>
@@ -136,7 +137,7 @@ export default function ExportSummary({
 
         {phase === "success" && result && (
           <>
-            <h1 style={{ marginBottom: "0.2rem", color: "var(--status-confirmed)" }}>✓ Export complete</h1>
+            <h1 style={{ marginBottom: "0.2rem", color: "var(--status-confirmed)" }}><Icon name="check" size={22} /> Export complete</h1>
 
             <div className="form-row">
               <div className="form-label">Strings written</div>
@@ -153,7 +154,7 @@ export default function ExportSummary({
 
             {preflight.outdated > 0 && (
               <p style={{ color: "var(--status-ai-draft)", fontSize: "0.85rem" }}>
-                ⚠ {preflight.outdated.toLocaleString()} of the exported strings were confirmed before a source-text
+                <Icon name="warning" size={14} /> {preflight.outdated.toLocaleString()} of the exported strings were confirmed before a source-text
                 change — worth a review pass.
               </p>
             )}
@@ -166,7 +167,7 @@ export default function ExportSummary({
 
             {result.unmapped > 0 && (
               <p style={{ color: "var(--status-ai-draft)", fontSize: "0.85rem" }}>
-                ⚠ {result.unmapped.toLocaleString()} confirmed string(s) had no matching game file to export into,
+                <Icon name="warning" size={14} /> {result.unmapped.toLocaleString()} confirmed string(s) had no matching game file to export into,
                 so they were skipped.
               </p>
             )}
@@ -191,7 +192,7 @@ export default function ExportSummary({
 
         {phase === "failed" && (
           <>
-            <h1 style={{ marginBottom: "0.2rem", color: "#e05a5a" }}>✕ Export failed</h1>
+            <h1 style={{ marginBottom: "0.2rem", color: "#e05a5a" }}><Icon name="cross" size={22} /> Export failed</h1>
             <p>{error}</p>
             <div className="welcome-footer">
               <button onClick={onClose}>Close</button>

@@ -3,7 +3,7 @@ import type { EditorRow, Project } from "../types";
 import { type ViewMode, BATCH_SIZE } from "../App";
 import { getDb } from "../db";
 import { createWriteQueue } from "../writeQueue";
-import { SQL_UNTRANSLATED, SQL_OUTDATED, SQL_ISSUES, SQL_DRAFT, SQL_CONFIRMED } from "../statusFilters";
+import { SQL_UNTRANSLATED, SQL_OUTDATED, SQL_ISSUES, SQL_DRAFT, SQL_CONFIRMED, SQL_FLAGGED } from "../statusFilters";
 import { buildStatusClause, shrinkingViewClause, buildStillInViewSql } from "../pagination";
 import { buildSearchPageQuery } from "../searchPattern";
 
@@ -218,7 +218,7 @@ export function useEditorRows({
     } else if (mode === "flagged") {
       const sql =
         baseSelect.replace("$__lang__", "$1").replace("$__game__", "$2") +
-        " AND t.flagged = 1 ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4";
+        ` AND ${SQL_FLAGGED} ORDER BY s.file_path, s.key LIMIT $3 OFFSET $4`;
       batch = (await db.select(sql, [lang, gameId, BATCH_SIZE, newOffset])) as EditorRow[];
     }
 

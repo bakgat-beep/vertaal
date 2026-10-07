@@ -1,5 +1,5 @@
 import type { ViewMode } from "./App";
-import { SQL_UNTRANSLATED, SQL_DRAFT, SQL_CONFIRMED, SQL_OUTDATED, SQL_ISSUES } from "./statusFilters";
+import { SQL_UNTRANSLATED, SQL_DRAFT, SQL_CONFIRMED, SQL_OUTDATED, SQL_ISSUES, SQL_FLAGGED } from "./statusFilters";
 
 // Why this file exists — the "shrinking list" problem:
 //
@@ -43,7 +43,7 @@ export function shrinkingViewClause(mode: ViewMode, statusFilter: Set<string>): 
     case "issues":
       return SQL_ISSUES;
     case "flagged":
-      return "t.flagged = 1";
+      return SQL_FLAGGED;
     case "category":
     case "subcategory":
       return buildStatusClause(statusFilter);

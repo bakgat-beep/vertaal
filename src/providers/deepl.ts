@@ -6,6 +6,7 @@ import type { TranslationProvider, TranslationRequest, TranslationResult, Provid
 // DeepL, whose API rejects browser-origin requests outright. Requests made
 // this way run in the native backend, so none of that applies.
 import { fetch } from "@tauri-apps/plugin-http";
+import { ProviderError, responseError } from "./errors";
 
 const LANGUAGE_CODE_MAP: Record<string, string> = {
   acehnese: "ACE",
@@ -30,6 +31,8 @@ const LANGUAGE_CODE_MAP: Record<string, string> = {
   // fail if this value were ever used as the SOURCE language.
   braz_por: "PT",
   simp_chinese: "ZH",
+  "simplified chinese": "ZH-HANS",
+  "brazilian portuguese": "PT-BR",
   bosnian: "BS",
   breton: "BR",
   bulgarian: "BG",
@@ -148,7 +151,7 @@ function toDeepLCode(language: string): string {
 }
 
 async function translate(request: TranslationRequest, config: ProviderConfig): Promise<TranslationResult> {
-  if (!config.apiKey) throw new Error("No DeepL API key configured.");
+  if (!config.apiKey) throw new ProviderError("No DeepL API key configured.", "permanent");
 
   const targetCode = toDeepLCode(request.targetLanguage);
   const sourceCode = toDeepLCode(request.sourceLanguage);
@@ -164,10 +167,11 @@ async function translate(request: TranslationRequest, config: ProviderConfig): P
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `DeepL-Auth-Key ${config.apiKey}` },
     body: JSON.stringify(body),
+    signal: config.signal,
   });
 
   if (!response.ok) {
-    throw new Error(`DeepL request failed: ${response.status} ${await response.text()}`);
+    throw responseError("DeepL", response.status, await response.text());
   }
 
   const data = await response.json();
@@ -196,6 +200,9 @@ export const deeplProvider: TranslationProvider = {
   requiresModel: false,
   supportsGlossary: false, // DeepL has its own separate glossary API we haven't wired up; treat as unsupported for now
   supportsBatch: true,
+  requiresApiKey: true,
+  supportsCustomBaseUrl: false,
+  isLlm: false,
   translate,
   detectAvailability,
 };

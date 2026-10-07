@@ -334,14 +334,14 @@ export function parseBulkGlossaryText(text: string): BulkGlossaryParseResult {
     const lineNumber = index + 1;
 
     if (!line.includes("\t")) {
-      skipped.push({ lineNumber, text: line, reason: "no tab between the English and the translation" });
+      skipped.push({ lineNumber, text: line, reason: "no tab between the source term and the translation" });
       return;
     }
     const parts = line.split("\t");
     const english = parts[0].trim();
     const translated = parts[1].trim();
     if (!english) {
-      skipped.push({ lineNumber, text: line, reason: "the English column is empty" });
+      skipped.push({ lineNumber, text: line, reason: "the source-term column is empty" });
       return;
     }
     if (!translated) {

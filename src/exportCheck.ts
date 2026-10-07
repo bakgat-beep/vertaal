@@ -32,5 +32,61 @@ export function checkExportMatchesProject(
   if (d.target_language.toLowerCase() !== project.target_language.toLowerCase()) {
     return `This file is a ${d.target_language} translation, but this project translates into ${project.target_language}. Nothing was imported.`;
   }
+  return checkRecordsAreWellFormed(d);
+}
+
+const KNOWN_STATUSES = new Set(["untranslated", "ai-suggested", "human-draft", "human-confirmed"]);
+
+function isTextOrMissing(v: unknown): boolean {
+  return v === undefined || v === null || typeof v === "string";
+}
+
+// Looks at EVERY translation and glossary record before anything is merged, so
+// one damaged record (a missing key, text that isn't text, an unknown status)
+// stops the whole import with a clear message, instead of being found halfway
+// through after some rows have already been changed. Returns null when all
+// records are fine.
+function checkRecordsAreWellFormed(d: Record<string, unknown>): string | null {
+  const translations = d.translations as unknown[];
+  for (let i = 0; i < translations.length; i++) {
+    const t = translations[i];
+    const where = `translation #${i + 1}`;
+    if (typeof t !== "object" || t === null) {
+      return `This file is damaged: ${where} is not a proper entry. Nothing was imported.`;
+    }
+    const r = t as Record<string, unknown>;
+    if (typeof r.key !== "string" || r.key === "") {
+      return `This file is damaged: ${where} has no key. Nothing was imported.`;
+    }
+    if (!isTextOrMissing(r.translated_text)) {
+      return `This file is damaged: ${where} ("${r.key}") has translated text that isn't text. Nothing was imported.`;
+    }
+    if (typeof r.status !== "string" || !KNOWN_STATUSES.has(r.status)) {
+      return `This file is damaged: ${where} ("${r.key}") has an unrecognised status. Nothing was imported.`;
+    }
+    if (
+      !isTextOrMissing(r.translated_by) ||
+      !isTextOrMissing(r.updated_at) ||
+      !isTextOrMissing(r.source_text) ||
+      !isTextOrMissing(r.source_text_at_translation)
+    ) {
+      return `This file is damaged: ${where} ("${r.key}") has a field of the wrong type. Nothing was imported.`;
+    }
+  }
+  const glossary = (d.glossary as unknown[] | undefined) ?? [];
+  for (let i = 0; i < glossary.length; i++) {
+    const g = glossary[i];
+    const where = `glossary term #${i + 1}`;
+    if (typeof g !== "object" || g === null) {
+      return `This file is damaged: ${where} is not a proper entry. Nothing was imported.`;
+    }
+    const r = g as Record<string, unknown>;
+    if (typeof r.english_term !== "string" || r.english_term === "" || typeof r.translated_term !== "string") {
+      return `This file is damaged: ${where} is missing its term or its translation. Nothing was imported.`;
+    }
+    if (!isTextOrMissing(r.notes) || !isTextOrMissing(r.status)) {
+      return `This file is damaged: ${where} ("${r.english_term}") has a field of the wrong type. Nothing was imported.`;
+    }
+  }
   return null;
 }

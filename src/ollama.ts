@@ -17,9 +17,19 @@ export interface OllamaModel {
 
 // Asks Ollama what's actually installed, and picks out the translation-relevant
 // ones so the welcome screen doesn't have to show every model on the machine.
-export async function detectInstalledModels(): Promise<OllamaModel[]> {
+export const DEFAULT_OLLAMA_URL = "http://localhost:11434";
+
+// The address Ollama is reachable at: the one the person entered, or the
+// usual local one. A trailing slash is removed so paths join cleanly.
+export function resolveOllamaUrl(baseUrl?: string | null): string {
+  const trimmed = baseUrl?.trim();
+  if (!trimmed) return DEFAULT_OLLAMA_URL;
+  return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+}
+
+export async function detectInstalledModels(baseUrl?: string | null): Promise<OllamaModel[]> {
   try {
-    const response = await fetch("http://localhost:11434/api/tags");
+    const response = await fetch(`${resolveOllamaUrl(baseUrl)}/api/tags`);
     if (!response.ok) return [];
     const data = await response.json();
     const models: OllamaModel[] = (data.models ?? [])

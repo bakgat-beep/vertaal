@@ -37,3 +37,22 @@ describe("providerOptionLabel", () => {
     );
   });
 });
+describe("what each provider needs from the settings screen", () => {
+  it("Google Translate (free endpoint) needs no key and no address", async () => {
+    const { TRANSLATION_PROVIDERS } = await import("./index");
+    expect(TRANSLATION_PROVIDERS["google-translate"].requiresApiKey).toBe(false);
+    expect(TRANSLATION_PROVIDERS["google-translate"].supportsCustomBaseUrl).toBe(false);
+  });
+  it("DeepL needs a key but not an address; Ollama and self-hosted servers take an address", async () => {
+    const { TRANSLATION_PROVIDERS } = await import("./index");
+    expect(TRANSLATION_PROVIDERS["deepl"]).toMatchObject({ requiresApiKey: true, supportsCustomBaseUrl: false });
+    expect(TRANSLATION_PROVIDERS["ollama"].supportsCustomBaseUrl).toBe(true);
+    expect(TRANSLATION_PROVIDERS["openai-compatible"]).toMatchObject({ requiresApiKey: true, supportsCustomBaseUrl: true });
+    expect(TRANSLATION_PROVIDERS["libretranslate"].supportsCustomBaseUrl).toBe(true);
+  });
+  it("only the two AI chat models have their replies checked for chatter", async () => {
+    const { TRANSLATION_PROVIDERS } = await import("./index");
+    const llms = Object.values(TRANSLATION_PROVIDERS).filter((p) => p.isLlm).map((p) => p.id).sort();
+    expect(llms).toEqual(["ollama", "openai-compatible"]);
+  });
+});

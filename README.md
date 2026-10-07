@@ -27,19 +27,17 @@ Vertaal helps you translate a Paradox grand strategy game — or a mod for one �
 - **Token-safe parsing** — game syntax like `$VARIABLES$`, `[functions]`, `#formatting#!` codes, and icon references are protected from translation and restored automatically, so AI translation can't break your game scripts
 - **Glossary support** — enforce consistent terminology across the whole project
 - **Batch translation** — translate a page, translate overnight in bulk, or re-run AI translation on everything unconfirmed (handy after switching providers)
+- **Any source language, per project** — translate from English, French, German or whichever language the game files are in; each project remembers its own source and target language
+- **Safe batch runs** — a Stop button on every batch, and a batch never overwrites text a person typed or confirmed
 - **Human review workflow** — every AI suggestion is a draft until a person confirms it; nothing ships unreviewed
 - **Change detection** — if the game patches and original text changes, previously-translated strings are automatically flagged for re-review
 - **Mod translation, not just base-game translation** — translate a specific Steam Workshop mod and export a small, separate companion mod that layers your translation on top, without ever touching the original mod's own files (so Workshop updates never conflict with your work)
 - **Git/GitHub collaboration**, or a lightweight JSON export/import for sharing progress without Git
-- **Full backup/restore** for your whole project database
+- **Full backup/restore** for your whole project database, with an automatic backup before overnight and re-run batches
 
 ## Setting up translation providers
 
 Vertaal works fully offline with a free local AI model, or with several cloud translation services. See [docs/PROVIDERS.md](docs/PROVIDERS.md) for setup instructions and honest notes on each option's limitations.
-
-## Screenshots
-
-*(Coming soon.)*
 
 ## Installing (for translators / beta testers)
 

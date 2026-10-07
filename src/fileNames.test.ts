@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { safeFileName, modFolderName, portableExportFileName, matchesProjectExportFile } from "./fileNames";
+import { safeFileName, modFolderName, portableExportFileName, matchesProjectExportFile, contributorSlug } from "./fileNames";
 
 describe("safeFileName", () => {
   it("leaves an ordinary name unchanged", () => {
@@ -51,9 +51,15 @@ describe("portableExportFileName", () => {
 
 
 describe("portableExportFileName with a contributor", () => {
-  it("appends a slug of the contributor's name", () => {
-    expect(portableExportFileName({ game_id: "eu5", target_language: "afrikaans" }, "Michi van Wyk")).toBe(
-      "eu5-afrikaans-michi-van-wyk-vertaal-export.json"
+  it("appends a slug of the contributor's name (a name that needs tidying gets a short fingerprint)", () => {
+    expect(portableExportFileName({ game_id: "eu5", target_language: "afrikaans" }, "Michi van Wyk")).toMatch(
+      /^eu5-afrikaans-michi-van-wyk-[0-9a-f]{6}-vertaal-export\.json$/
+    );
+  });
+
+  it("leaves an already-tidy name exactly as before", () => {
+    expect(portableExportFileName({ game_id: "eu5", target_language: "afrikaans" }, "michi")).toBe(
+      "eu5-afrikaans-michi-vertaal-export.json"
     );
   });
 
@@ -90,5 +96,27 @@ describe("matchesProjectExportFile", () => {
     expect(matchesProjectExportFile("ck3-afrikaans-alice-vertaal-export.json", project)).toBe(false);
     expect(matchesProjectExportFile("README.md", project)).toBe(false);
     expect(matchesProjectExportFile(".git", project)).toBe(false);
+  });
+});
+describe("contributorSlug - different names never share a file", () => {
+  it("keeps an already-tidy name exactly as it was (so existing files keep their names)", () => {
+    expect(contributorSlug("michi")).toBe("michi");
+    expect(contributorSlug("jane-doe")).toBe("jane-doe");
+  });
+  it("gives 'Jane Doe', 'Jane-Doe', 'jane  doe' and 'JANE DOE' four different files", () => {
+    const slugs = ["Jane Doe", "Jane-Doe", "jane  doe", "JANE DOE"].map(contributorSlug);
+    expect(new Set(slugs).size).toBe(4);
+  });
+  it("gives the same name the same file every time, ignoring spaces at the ends", () => {
+    expect(contributorSlug("Jane Doe")).toBe(contributorSlug("  Jane Doe "));
+  });
+  it("never produces characters Windows rejects in a file name", () => {
+    expect(contributorSlug('A:B/C?"D"')).toMatch(/^[^<>:"/\\|?*]+$/);
+  });
+  it("the file name still ends with the expected pattern and is found by the folder scan", () => {
+    const project = { game_id: "eu5", target_language: "afrikaans" };
+    const f = portableExportFileName(project, "Jane Doe");
+    expect(f).toMatch(/^eu5-afrikaans-jane-doe-[0-9a-f]{6}-vertaal-export\.json$/);
+    expect(matchesProjectExportFile(f, project)).toBe(true);
   });
 });

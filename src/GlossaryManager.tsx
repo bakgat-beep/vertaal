@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { languageDisplayName } from "./languageCodes";
+import { Icon } from "./Icon";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { documentDir, join } from "@tauri-apps/api/path";
@@ -21,6 +23,9 @@ import { useEscapeKey } from "./hooks/useEscapeKey";
 
 interface Props {
   gameId: string;
+  // The language the project's game text is in (the left-hand column of the
+  // glossary). Used only for wording on screen.
+  sourceLanguage: string;
   targetLanguage: string;
   onClose: () => void;
   // Jumps to the main editor, searching for the given term — used by the
@@ -41,6 +46,7 @@ const PAGE_SIZE = 50;
 
 export default function GlossaryManager({
   gameId,
+  sourceLanguage,
   targetLanguage,
   onClose,
   onViewOccurrences,
@@ -50,6 +56,8 @@ export default function GlossaryManager({
 }: Props) {
   useEscapeKey(onClose);
   const scopeWord = isModProject ? "mod" : "game";
+  // "English" for most projects, but e.g. "French" for one that reads the game's French text.
+  const sourceName = languageDisplayName(sourceLanguage);
   const [terms, setTerms] = useState<GlossaryRow[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loaded, setLoaded] = useState(false);
@@ -188,7 +196,7 @@ export default function GlossaryManager({
 
   async function handleSave() {
     if (!draftEnglish.trim() || !draftTranslated.trim()) {
-      setPanelMessage("Both English and Translated are required.");
+      setPanelMessage(`Both ${sourceName} and Translated are required.`);
       return;
     }
     const scopeGameId = draftShared ? null : gameId;
@@ -268,7 +276,7 @@ export default function GlossaryManager({
     if (skipped.length === 0) setBulkText("");
 
     let message = `Imported ${pairs.length} term(s): ${added} added, ${updated} updated.`;
-    if (repeated > 0) message += ` ${repeated} repeated English word(s) in the paste — the last one was used.`;
+    if (repeated > 0) message += ` ${repeated} repeated ${sourceName} word(s) in the paste — the last one was used.`;
     if (skipped.length > 0) {
       const shown = skipped
         .slice(0, 5)
@@ -291,7 +299,7 @@ export default function GlossaryManager({
     const shared = allTerms.filter((t) => t.game_id === null);
     const gameSpecific = allTerms.filter((t) => t.game_id !== null);
 
-    // Kept to plain English/Translated columns to match exactly what Bulk
+    // Kept to plain source/Translated columns to match exactly what Bulk
     // Add/Update reads back in. Shared and game-specific terms are grouped
     // under "#" section headers rather than mixed together — those header
     // lines are ignored on import (any line starting with "#" is skipped),
@@ -335,14 +343,14 @@ export default function GlossaryManager({
               " The base game's own glossary is also applied automatically (it isn't listed here) — add a term here to override one of its translations for this mod."}
           </p>
           {providerName === null && (
-            <p className="glossary-save-message" style={{ color: "var(--status-ai-draft)" }}>
-              ⚠ This project is set to manual translation (no AI provider), so nothing here is sent to a translator —
+            <p className="glossary-notice">
+              <Icon name="warning" size={14} /> This project is set to manual translation (no AI provider), so nothing here is sent to a translator —
               the glossary is just a reference for your own edits.
             </p>
           )}
           {providerName && !providerSupportsGlossary && (
-            <p className="glossary-save-message" style={{ color: "var(--status-ai-draft)" }}>
-              ⚠ {providerName} can't apply glossary terms, so nothing here is sent to it when translating — the glossary
+            <p className="glossary-notice">
+              <Icon name="warning" size={14} /> {providerName} can't apply glossary terms, so nothing here is sent to it when translating — the glossary
               is just a reference for your own edits. TranslateGemma (Ollama) and OpenAI-compatible providers do apply it.
             </p>
           )}
@@ -350,9 +358,9 @@ export default function GlossaryManager({
 
         <div style={{ marginBottom: "1rem" }}>
           <p style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>
-            Paste rows copied from a spreadsheet (English, then Translated, separated by a tab — one pair per line;
+            Paste rows copied from a spreadsheet ({sourceName}, then Translated, separated by a tab — one pair per line;
             commas don't work as a separator, since translations can contain commas) for adding or updating many
-            terms at once. An existing term with the same English word (in the same
+            terms at once. An existing term with the same {sourceName} word (in the same
             shared/game scope) is updated rather than duplicated. For editing one term at a time, notes, or status,
             use the list below instead.
           </p>
@@ -386,7 +394,7 @@ export default function GlossaryManager({
             type="text"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Search English, translated, or notes..."
+            placeholder={`Search ${sourceName}, translated, or notes...`}
           />
           <span className="glossary-result-count">
             {loaded ? (totalCount === 0 ? "No terms" : `Showing ${rangeStart}–${rangeEnd} of ${totalCount}`) : "Loading..."}
@@ -422,7 +430,7 @@ export default function GlossaryManager({
                   <th style={{ width: "28px" }}>
                     <input type="checkbox" checked={allOnPageSelected} onChange={toggleSelectAllOnPage} />
                   </th>
-                  <th>English</th>
+                  <th>{sourceName}</th>
                   <th>Translated</th>
                   <th title="Preferred terms are applied by the AI translator. Needs-review terms are kept but not applied.">
                     Status
@@ -443,7 +451,7 @@ export default function GlossaryManager({
                     <td onClick={(e) => toggleSelect(e, t.id)}>
                       <input type="checkbox" checked={selectedIds.has(t.id)} readOnly />
                     </td>
-                    <td>{t.english_term}</td>
+                    <td className="glossary-term">{t.english_term}</td>
                     <td>{t.translated_term || "—"}</td>
                     <td>
                       <span className={`status-badge ${effectiveStatus(t)}`}>
@@ -452,7 +460,7 @@ export default function GlossaryManager({
                         {effectiveStatus(t) === "untranslated" && "Untranslated"}
                       </span>
                     </td>
-                    <td style={{ textAlign: "center" }}>{t.game_id === null ? "✓" : ""}</td>
+                    <td style={{ textAlign: "center", color: "var(--status-confirmed)" }} title={t.game_id === null ? "Shared across all games" : undefined}>{t.game_id === null ? <Icon name="check" size={14} /> : ""}</td>
                     <td>
                       {usageCounts[t.id] === undefined ? (
                         "…"
@@ -493,7 +501,7 @@ export default function GlossaryManager({
             ) : (
               <>
                 <div className="form-row">
-                  <div className="form-label">English</div>
+                  <div className="form-label">{sourceName}</div>
                   <input type="text" value={draftEnglish} onChange={(e) => setDraftEnglish(e.target.value)} />
                 </div>
                 <div className="form-row">
