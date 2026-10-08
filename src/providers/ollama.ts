@@ -14,7 +14,7 @@ import { ProviderError, responseError } from "./errors";
 // DeepL, whose API rejects browser-origin requests outright. Requests made
 // this way run in the native backend, so none of that applies.
 import { fetch } from "@tauri-apps/plugin-http";
-import { languageDisplayName, languageIsoCode } from "../languagecodes";
+import { languageDisplayName, languageIsoCode } from "../languageCodes";
 
 // TranslateGemma was trained on one exact prompt, which names each language
 // AND gives its short code, and puts two blank lines before the text. When a

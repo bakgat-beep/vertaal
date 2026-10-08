@@ -6,7 +6,7 @@ import type { TranslationProvider, TranslationRequest, TranslationResult, Provid
 // DeepL, whose API rejects browser-origin requests outright. Requests made
 // this way run in the native backend, so none of that applies.
 import { fetch } from "@tauri-apps/plugin-http";
-import { languageDisplayName } from "../languagecodes";
+import { languageDisplayName } from "../languageCodes";
 import { ProviderError, responseError } from "./errors";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";

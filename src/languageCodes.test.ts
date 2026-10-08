@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { languageDisplayName, languageIsoCode } from "./languagecodes";
+import { languageDisplayName, languageIsoCode } from "./languageCodes";
 
 describe("languageDisplayName", () => {
   it("capitalises an ordinary language value as-is", () => {
