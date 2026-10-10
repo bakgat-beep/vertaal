@@ -3,7 +3,17 @@ import { describe, it, expect, vi } from "vitest";
 const createMock = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-shell", () => ({ Command: { create: createMock } }));
 
-import { commitFiles, listUnsharedFiles, pull, push, TOKEN_ENV_NAME } from "./git";
+import {
+  checkRemoteUrl,
+  cloneRepo,
+  commitFiles,
+  listUnsharedFiles,
+  pull,
+  push,
+  setRemote,
+  tokenCanBeSentTo,
+  TOKEN_ENV_NAME,
+} from "./git";
 
 function queueResults(results: { code: number; stdout: string; stderr: string }[]) {
   const queue = [...results];
@@ -228,6 +238,117 @@ describe("the GitHub token never goes into the command", () => {
     const r = await push("/repo", SECRET, URL);
     expect(r.ok).toBe(false);
     expect(r.output).not.toContain(SECRET);
+    expect(r.output).toContain("***");
+  });
+});
+
+describe("checkRemoteUrl: no passwords written into the web address", () => {
+  it.each([
+    "https://github.com/a/b.git",
+    "https://gitlab.com/a/b.git",
+    "git@github.com:a/b.git", // the "git@" form is a normal login name, not a password
+    "  https://github.com/a/b.git  ",
+  ])("accepts %s", (url) => expect(checkRemoteUrl(url)).toBeNull());
+
+  it.each([
+    "https://user:pw@github.com/a/b.git",
+    "https://ghp_SuperSecretToken123@github.com/a/b.git", // a token used as the "user name" is still a password
+    "http://user:pw@example.com/a/b.git",
+    "https://user@example.com/a/b.git",
+  ])("refuses %s", (url) => {
+    const problem = checkRemoteUrl(url);
+    expect(problem).toMatch(/password|token|user name/i);
+    expect(problem).not.toContain("SuperSecretToken123"); // the message itself never repeats the secret
+  });
+});
+
+describe("tokenCanBeSentTo: only github.com over https", () => {
+  it.each([
+    "https://github.com/a/b.git",
+    "https://GitHub.com/a/b.git",
+    "https://github.com:443/a/b.git",
+  ])("yes: %s", (url) => expect(tokenCanBeSentTo(url)).toBe(true));
+
+  it.each([
+    "http://github.com/a/b.git", // not encrypted
+    "https://github.com.evil.com/a/b.git", // starts like GitHub, is not
+    "https://evil.com/github.com/a/b.git",
+    "https://notgithub.com/a/b.git",
+    "https://www.github.com/a/b.git",
+    "https://github.com:8443/a/b.git",
+    "https://github.com./a/b.git",
+    "https://github.com@evil.com/a/b.git",
+    "https://user:pw@github.com/a/b.git",
+    "git@github.com:a/b.git",
+    "https://gitlab.com/a/b.git",
+    "",
+    "not a url",
+  ])("no: %j", (url) => expect(tokenCanBeSentTo(url)).toBe(false));
+});
+
+describe("the token only goes where it belongs", () => {
+  const SECRET = "ghp_SuperSecretToken123";
+
+  it("push to another site: the token is NOT used or passed on", async () => {
+    createMock.mockReset();
+    queueResults([{ code: 0, stdout: "ok", stderr: "" }]);
+    await push("/repo", SECRET, "https://evil.example.com/a/b.git");
+    const args = createMock.mock.calls[0][1] as string[];
+    const opts = createMock.mock.calls[0][2] as { env: Record<string, string> };
+    expect(args).toEqual(["push", "origin", "HEAD"]);
+    expect(args.join(" ")).not.toContain("evil.example.com");
+    expect(opts.env[TOKEN_ENV_NAME]).toBeUndefined();
+  });
+
+  it("pull from a look-alike address: the token is NOT used", async () => {
+    createMock.mockReset();
+    queueResults([{ code: 0, stdout: "Already up to date.", stderr: "" }]);
+    await pull("/repo", SECRET, "https://github.com.evil.com/a/b.git", "Bob");
+    const opts = createMock.mock.calls[0][2] as { env: Record<string, string> };
+    expect(opts.env[TOKEN_ENV_NAME]).toBeUndefined();
+  });
+
+  it("when the token was held back and Git then fails to log in, the message says why", async () => {
+    createMock.mockReset();
+    queueResults([{ code: 128, stdout: "", stderr: "fatal: Authentication failed" }]);
+    const r = await push("/repo", SECRET, "https://gitlab.com/a/b.git");
+    expect(r.ok).toBe(false);
+    expect(r.output).toMatch(/token was not used/i);
+    expect(r.output).toMatch(/github\.com/);
+  });
+
+  it("push/pull refuse an address with a password in it, without running Git at all", async () => {
+    createMock.mockReset();
+    queueResults([]);
+    const a = await push("/repo", null, "https://user:pw@github.com/a/b.git");
+    const b = await pull("/repo", SECRET, "https://user:pw@github.com/a/b.git", "Bob");
+    expect(a.ok).toBe(false);
+    expect(b.ok).toBe(false);
+    expect(a.output + b.output).not.toContain("pw@");
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("cloneRepo and setRemote refuse an address with a password in it", async () => {
+    createMock.mockReset();
+    queueResults([]);
+    const a = await cloneRepo("https://user:pw@github.com/a/b.git", "/dest");
+    const b = await setRemote("/repo", "https://ghp_x@github.com/a/b.git");
+    expect(a.ok).toBe(false);
+    expect(b.ok).toBe(false);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("addresses with a password are hidden in anything Git prints, for http:// too", () => {
+  it.each([
+    ["https", "https://user:hunter2@example.com/a/b.git"],
+    ["http", "http://user:hunter2@example.com/a/b.git"],
+  ])("%s", async (_n, leaky) => {
+    createMock.mockReset();
+    queueResults([{ code: 128, stdout: "", stderr: `fatal: unable to access '${leaky}': could not resolve host` }]);
+    const r = await push("/repo", null, "https://example.com/a/b.git"); // Git itself echoes the address saved earlier
+    expect(r.ok).toBe(false);
+    expect(r.output).not.toContain("hunter2");
     expect(r.output).toContain("***");
   });
 });

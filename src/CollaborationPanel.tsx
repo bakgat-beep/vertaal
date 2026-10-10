@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { join } from "@tauri-apps/api/path";
 import type { Project } from "./types";
-import { checkGitAvailable, initRepo, cloneRepo, setRemote, commitFiles, listUnsharedFiles, push, pull } from "./git";
+import { checkGitAvailable, initRepo, cloneRepo, setRemote, checkRemoteUrl, commitFiles, listUnsharedFiles, push, pull } from "./git";
 import { getContributorName, getGithubToken, setGithubToken } from "./settings";
 import { exportPortableProjectData } from "./portableExport";
 import { importAllContributorFiles, type CombinedMergeSummary } from "./mergeImport";
@@ -99,6 +99,13 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
 
   async function handleSetRemote() {
     if (!repoPath || !remoteUrl.trim()) return;
+    // Checked BEFORE anything is saved, so an address with a password in it is
+    // never written into Vertaal's database either.
+    const problem = checkRemoteUrl(remoteUrl);
+    if (problem) {
+      setOutput(problem);
+      return;
+    }
     await saveProjectField("git_remote_url", remoteUrl.trim());
     setBusy(true);
     const result = await setRemote(repoPath, remoteUrl.trim());

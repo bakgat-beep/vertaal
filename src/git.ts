@@ -1,20 +1,89 @@
 import { Command } from "@tauri-apps/plugin-shell";
 
 // Removes anything that looks like a password from text before it is shown.
-// Two cases: a password written into a web address (https://secret@host), and
-// the token itself, which is passed in separately.
+// Three cases: a password written into a web address in a command we ran
+// (https:// or http://), the same thing inside whatever Git prints back (Git
+// likes to repeat the address it was using), and the token itself, which is
+// passed in separately.
 function redactCredentials(args: string[], output: string, token: string | null = null): string {
   let redacted = output;
   for (const arg of args) {
-    const match = arg.match(/^https:\/\/([^@/]+)@/);
+    const match = arg.match(/^https?:\/\/([^@/]+)@/i);
     if (match) {
       const credential = match[1];
       redacted = redacted.split(credential).join("***");
     }
   }
+  redacted = redacted.replace(/(https?:\/\/)[^\s/@'"]+@/gi, "$1***@");
   if (token) redacted = redacted.split(token).join("***");
   return redacted;
 }
+
+// Reads a web address ("scheme://...") if it is one. Addresses in the "git@host:path"
+// form are not web addresses and return null.
+function parseWebAddress(raw: string): URL | null {
+  const trimmed = raw.trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return null;
+  try {
+    return new URL(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+// A password, or a token used as a "user name", written into a web address
+// (https://name:secret@host/...) would be saved in plain text in the repository's
+// own settings and echoed in messages. Vertaal keeps the token separately (see
+// App Settings), so addresses like that are refused. Returns a plain-words
+// problem, or null when the address is fine. The message never repeats the address.
+export function checkRemoteUrl(url: string): string | null {
+  const u = parseWebAddress(url);
+  if (u && (u.username || u.password)) {
+    return (
+      "This address has a user name or password written into it (the part before the @). " +
+      "That would be saved in plain text and could leak. Remove it and use the plain address, for example " +
+      "https://github.com/owner/repository.git. Your GitHub token is kept separately in the Collaboration settings."
+    );
+  }
+  return null;
+}
+
+// The GitHub token is only ever handed to Git for an https address on
+// github.com itself. Before, it was sent to whatever address was typed in,
+// which would have given the token to any other site (or a look-alike such as
+// github.com.evil.com, or an unencrypted http:// address).
+export function tokenCanBeSentTo(url: string): boolean {
+  const u = parseWebAddress(url);
+  return (
+    !!u &&
+    u.protocol === "https:" &&
+    u.hostname === "github.com" &&
+    !u.username &&
+    !u.password &&
+    (u.port === "" || u.port === "443")
+  );
+}
+
+// Decides how push and pull talk to the remote: refuses addresses with a
+// password in them, and only passes the token on when it is allowed to go there.
+function prepareRemote(
+  token: string | null,
+  remoteUrl: string
+): { problem: string | null; token: string | null; target: string; tokenHeldBack: boolean } {
+  const problem = remoteUrl.trim() ? checkRemoteUrl(remoteUrl) : null;
+  if (problem) return { problem, token: null, target: "origin", tokenHeldBack: false };
+  const useToken = !!token && tokenCanBeSentTo(remoteUrl);
+  return {
+    problem: null,
+    token: useToken ? token : null,
+    target: useToken ? remoteUrl.trim() : "origin",
+    tokenHeldBack: !!token && !useToken,
+  };
+}
+
+const TOKEN_HELD_BACK_NOTE =
+  "\n\nNote: your GitHub token was not used, because it is only sent to https://github.com addresses. " +
+  "If this repository is on GitHub, check the address in the Collaboration settings.";
 
 // The name of the environment variable that carries the GitHub token to Git.
 // An environment variable is private to the one Git process we start, whereas
@@ -67,12 +136,16 @@ export async function initRepo(folderPath: string): Promise<{ ok: boolean; outpu
 }
 
 export async function cloneRepo(url: string, destFolder: string): Promise<{ ok: boolean; output: string }> {
+  const problem = checkRemoteUrl(url);
+  if (problem) return { ok: false, output: problem };
   // Clones into destFolder itself (".") rather than creating a nested subfolder,
   // so destFolder is expected to already exist and be empty.
   return runGit(["clone", url, "."], destFolder);
 }
 
 export async function setRemote(folderPath: string, url: string): Promise<{ ok: boolean; output: string }> {
+  const problem = checkRemoteUrl(url);
+  if (problem) return { ok: false, output: problem };
   const existing = await runGit(["remote"], folderPath);
   if (existing.output.includes("origin")) {
     return runGit(["remote", "set-url", "origin", url], folderPath);
@@ -146,9 +219,11 @@ export async function listUnsharedFiles(folderPath: string, shared: string[]): P
 
 export async function push(folderPath: string, token: string | null, remoteUrl: string): Promise<{ ok: boolean; output: string }> {
   // The address is used as it is; the token (if any) travels separately, see
-  // tokenCredentialArgs above.
-  const target = token ? remoteUrl : "origin";
-  return runGit(["push", target, "HEAD"], folderPath, token);
+  // tokenCredentialArgs above, and only for github.com (see prepareRemote).
+  const remote = prepareRemote(token, remoteUrl);
+  if (remote.problem) return { ok: false, output: remote.problem };
+  const result = await runGit(["push", remote.target, "HEAD"], folderPath, remote.token);
+  return remote.tokenHeldBack && !result.ok ? { ...result, output: result.output + TOKEN_HELD_BACK_NOTE } : result;
 }
 
 const CONFLICT_PATTERN = /CONFLICT|Automatic merge failed/i;
@@ -171,7 +246,9 @@ export async function pull(
   remoteUrl: string,
   contributorName: string | null
 ): Promise<{ ok: boolean; output: string }> {
-  const target = token ? remoteUrl : "origin";
+  const remote = prepareRemote(token, remoteUrl);
+  if (remote.problem) return { ok: false, output: remote.problem };
+  const target = remote.target;
   // --no-rebase: always a merge, regardless of this machine's own git config
   // (pull.rebase) — the recovery step below assumes a merge is in progress.
   // "HEAD" as the thing to pull (rather than nothing, or a guessed branch
@@ -187,7 +264,7 @@ export async function pull(
   const result = await runGit(
     [...gitIdentityArgs(contributorName), "pull", "--no-rebase", "--allow-unrelated-histories", target, "HEAD"],
     folderPath,
-    token
+    remote.token
   );
 
   if (!result.ok && EMPTY_REMOTE_PATTERN.test(result.output)) {
@@ -204,5 +281,5 @@ export async function pull(
         "try giving yourself a more distinct one in App Settings, then Pull again.",
     };
   }
-  return result;
+  return remote.tokenHeldBack && !result.ok ? { ...result, output: result.output + TOKEN_HELD_BACK_NOTE } : result;
 }
