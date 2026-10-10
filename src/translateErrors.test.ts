@@ -6,7 +6,7 @@ let flagged = 0;
 const fakeDb = {
   select: async () => [],
   execute: async (q: string, p: any[] = []) => {
-    if (q.includes("INSERT OR REPLACE INTO translations")) saved.push({ text: p[3] });
+    if (/DO UPDATE SET\s+translated_text/.test(q)) saved.push({ text: p[3] });
     if (q.includes("SET flagged = 1")) flagged++;
   },
 };

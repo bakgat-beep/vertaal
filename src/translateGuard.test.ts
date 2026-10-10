@@ -14,12 +14,17 @@ const fakeDb = {
     return [];
   },
   execute: async (q: string, p: any[] = []) => {
-    if (q.includes("INSERT OR REPLACE INTO translations")) {
-      const [key, gameId, lang, text] = p;
+    if (/DO UPDATE SET\s+translated_text/.test(q)) {
+      // The save is one statement: params are [key, game, language, text, who, sourceText, skipHumanWork (0/1)].
+      const [key, gameId, lang, text, , , skipHumanWork] = p;
       const i = rows.findIndex((r) => r.string_key === key && r.game_id === gameId && r.target_language === lang);
+      if (i >= 0 && skipHumanWork === 1 && (rows[i].status === "human-confirmed" || rows[i].status === "human-draft")) {
+        return { rowsAffected: 0 };
+      }
       const row = { string_key: key, game_id: gameId, target_language: lang, translated_text: text, status: "ai-suggested" };
       if (i >= 0) rows[i] = row;
       else rows.push(row);
+      return { rowsAffected: 1 };
     } else if (q.includes("INSERT INTO translation_history")) {
       history.push({ new_text: p[4] });
     }

@@ -174,6 +174,14 @@ export async function translateAndSave(
       const chatty = describeChattyReply(protectedText, rawTranslation);
       if (chatty) return { ok: false, error: `Rejected: ${chatty}.` };
     }
+    // An empty reply is not a translation. Saved as it is, it would put a blank
+    // "AI draft" into the string (and, from the single-row button, wipe the text
+    // that was there). Treated as a failed attempt: retried, and flagged for a
+    // person if it keeps happening. A source that is itself blank is left out of
+    // this, since there is nothing to translate.
+    if (rawTranslation === "" && sourceText.trim() !== "") {
+      return { ok: false, error: "The translation provider returned an empty reply." };
+    }
 
     const gm = GAME_ADAPTERS[currentProject.parent_game_id];
     if (gm?.forbiddenCharacters) {
@@ -204,13 +212,34 @@ export async function translateAndSave(
       return { ok: true, skipped: true };
     }
 
-    await db.execute(
-      `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_text_at_translation)
-       VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), COALESCE((SELECT flagged FROM translations WHERE string_key = $6 AND game_id = $7 AND target_language = $8), 0), $9)`,
+    // ONE statement does the checking and the saving, so there is no gap in
+    // which a string you confirm (or start typing) can be replaced: the
+    // "WHERE" part is judged by the database at the very moment of writing.
+    //  - In a batch run (skipHumanWork), a confirmed or hand-typed row is left
+    //    exactly as it is, and the database reports 0 rows changed.
+    //  - The flag already on the string is not in the list of things changed,
+    //    so it stays.
+    // (Unlike the old INSERT OR REPLACE, this also keeps the row's id.)
+    const saveResult = await db.execute(
+      `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged, source_text_at_translation)
+       VALUES ($1, $2, $3, $4, 'ai-suggested', $5, datetime('now'), 0, $6)
+       ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET
+         translated_text = excluded.translated_text,
+         status = 'ai-suggested',
+         translated_by = excluded.translated_by,
+         updated_at = excluded.updated_at,
+         source_hash_at_translation = NULL,
+         source_text_at_translation = excluded.source_text_at_translation
+       WHERE $7 = 0 OR translations.status NOT IN ('human-confirmed', 'human-draft')`,
       // The exact source text that was just translated is recorded, so any
       // later change to it — however small — is noticed.
-      [key, gameId, currentProject.target_language, finalTranslation, attribution, key, gameId, currentProject.target_language, sourceText]
+      [key, gameId, currentProject.target_language, finalTranslation, attribution, sourceText, skipHumanWork ? 1 : 0]
     );
+    if (saveResult && saveResult.rowsAffected === 0) {
+      // Someone's own work was there at the moment of saving: kept, and nothing
+      // is logged as changed because nothing changed.
+      return { ok: true, skipped: true };
+    }
 
     await db.execute(
       `INSERT INTO translation_history (string_key, game_id, target_language, old_text, new_text, changed_by)
