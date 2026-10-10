@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { join } from "@tauri-apps/api/path";
 import type { Project } from "./types";
-import { checkGitAvailable, initRepo, cloneRepo, setRemote, commitAll, push, pull } from "./git";
+import { checkGitAvailable, initRepo, cloneRepo, setRemote, commitFiles, listUnsharedFiles, push, pull } from "./git";
 import { getContributorName, getGithubToken, setGithubToken } from "./settings";
 import { exportPortableProjectData } from "./portableExport";
 import { importAllContributorFiles, type CombinedMergeSummary } from "./mergeImport";
@@ -136,7 +136,15 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
       await exportPortableProjectData(project, filePath);
 
       setOutput("Committing your changes...");
-      const commitResult = await commitAll(repoPath, `Update ${project.target_language} translations`, contributorName);
+      // Only your own export file is saved and shared; nothing else in the folder.
+        const ownFile = exportFileName();
+        const commitResult = await commitFiles(repoPath, `Update ${project.target_language} translations`, contributorName, [ownFile]);
+        const unshared = await listUnsharedFiles(repoPath, [ownFile]);
+        const unsharedNote =
+          unshared.length > 0
+            ? `\n\nNote: ${unshared.length} other file(s) in this folder were NOT shared: ${unshared.slice(0, 10).join(", ")}` +
+              `${unshared.length > 10 ? ", ..." : ""}. Sync only shares your own export file. Consider using a folder just for Vertaal.`
+            : "";
 
       setOutput("Checking for collaborators' changes first...");
       const token = await getGithubToken();
@@ -157,7 +165,7 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
 
       setOutput("Merging in any collaborators' changes...");
       const mergeSummary = await importAllContributorFiles(project, repoPath);
-      setOutput(`Push: ${pushResult.output}\n\n${summaryLine(mergeSummary)}`);
+      setOutput(`Push: ${pushResult.output}\n\n${summaryLine(mergeSummary)}${unsharedNote}`);
       if (mergeSummary.applied > 0 || mergeSummary.glossaryAdded > 0 || mergeSummary.glossaryUpdated > 0) {
         onDataChanged();
       }

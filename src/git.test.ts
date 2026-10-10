@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 const createMock = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-shell", () => ({ Command: { create: createMock } }));
 
-import { commitAll, pull, push, TOKEN_ENV_NAME } from "./git";
+import { commitFiles, listUnsharedFiles, pull, push, TOKEN_ENV_NAME } from "./git";
 
 function queueResults(results: { code: number; stdout: string; stderr: string }[]) {
   const queue = [...results];
@@ -12,14 +12,14 @@ function queueResults(results: { code: number; stdout: string; stderr: string }[
   }));
 }
 
-describe("commitAll", () => {
+describe("commitFiles", () => {
   it("commits with an identity taken from the contributor's name, never the machine's own git config", async () => {
     createMock.mockReset();
     queueResults([
-      { code: 0, stdout: "", stderr: "" }, // add .
+      { code: 0, stdout: "", stderr: "" }, // add -- file
       { code: 0, stdout: "[main abc123] msg", stderr: "" }, // commit
     ]);
-    await commitAll("/repo", "Update afrikaans translations", "Michi van Wyk");
+    await commitFiles("/repo", "Update afrikaans translations", "Michi van Wyk", ["a.json"]);
 
     const commitArgs = createMock.mock.calls[1][1] as string[];
     expect(commitArgs.slice(0, 6)).toEqual([
@@ -38,24 +38,84 @@ describe("commitAll", () => {
       { code: 0, stdout: "", stderr: "" },
       { code: 0, stdout: "", stderr: "" },
     ]);
-    await commitAll("/repo", "msg", null);
+    await commitFiles("/repo", "msg", null, ["a.json"]);
     const commitArgs = createMock.mock.calls[1][1] as string[];
     expect(commitArgs).toContain("user.name=Vertaal User");
     expect(commitArgs).toContain("user.email=vertaal-user@users.noreply.vertaal.local");
   });
 });
 
-describe("commitAll when staging fails", () => {
+describe("commitFiles when staging fails", () => {
   it("stops and reports the error instead of committing anyway", async () => {
     createMock.mockReset();
     queueResults([
-      { code: 128, stdout: "", stderr: "fatal: Unable to create index.lock" }, // add .
+      { code: 128, stdout: "", stderr: "fatal: Unable to create index.lock" }, // add -- file
       { code: 0, stdout: "[main abc] should never run", stderr: "" }, // commit
     ]);
-    const result = await commitAll("/repo", "msg", "Michi");
+    const result = await commitFiles("/repo", "msg", "Michi", ["a.json"]);
     expect(result.ok).toBe(false);
     expect(result.output).toContain("index.lock");
     expect(createMock).toHaveBeenCalledTimes(1); // the commit was never attempted
+  });
+});
+
+describe("commitFiles shares ONLY the files it is given", () => {
+  it("stages the named file with 'add --', never 'add .'", async () => {
+    createMock.mockReset();
+    queueResults([
+      { code: 0, stdout: "", stderr: "" },
+      { code: 0, stdout: "", stderr: "" },
+    ]);
+    await commitFiles("/repo", "msg", "Bob", ["eu5-afrikaans-bob-vertaal-export.json"]);
+    expect(createMock.mock.calls[0][1]).toEqual(["add", "--", "eu5-afrikaans-bob-vertaal-export.json"]);
+    for (const call of createMock.mock.calls) expect(call[1]).not.toContain(".");
+  });
+
+  it("commits only those files, even if something else was already staged in the folder", async () => {
+    createMock.mockReset();
+    queueResults([
+      { code: 0, stdout: "", stderr: "" },
+      { code: 0, stdout: "", stderr: "" },
+    ]);
+    await commitFiles("/repo", "my message", "Bob", ["a.json"]);
+    const commitArgs = createMock.mock.calls[1][1] as string[];
+    expect(commitArgs.slice(-4)).toEqual(["-m", "my message", "--", "a.json"]);
+  });
+
+  it("a file name that starts with a dash cannot be mistaken for a Git option", async () => {
+    createMock.mockReset();
+    queueResults([
+      { code: 0, stdout: "", stderr: "" },
+      { code: 0, stdout: "", stderr: "" },
+    ]);
+    await commitFiles("/repo", "msg", "Bob", ["--all"]);
+    expect(createMock.mock.calls[0][1]).toEqual(["add", "--", "--all"]);
+  });
+
+  it("refuses to run at all when no file is named (so it can never fall back to everything)", async () => {
+    createMock.mockReset();
+    queueResults([]);
+    const result = await commitFiles("/repo", "msg", "Bob", []);
+    expect(result.ok).toBe(false);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("listUnsharedFiles", () => {
+  it("lists files in the folder that are not shared, leaving out the ones we do share", async () => {
+    createMock.mockReset();
+    queueResults([
+      { code: 0, stdout: "?? notes.txt\0 M eu5-afrikaans-bob-vertaal-export.json\0?? secrets.env\0", stderr: "" },
+    ]);
+    const list = await listUnsharedFiles("/repo", ["eu5-afrikaans-bob-vertaal-export.json"]);
+    expect(list).toEqual(["notes.txt", "secrets.env"]);
+    expect(createMock.mock.calls[0][1]).toEqual(["status", "--porcelain", "-z", "-uall"]);
+  });
+
+  it("returns an empty list when Git cannot say (the warning is a courtesy, never a blocker)", async () => {
+    createMock.mockReset();
+    queueResults([{ code: 128, stdout: "", stderr: "fatal: not a git repository" }]);
+    expect(await listUnsharedFiles("/repo", ["a.json"])).toEqual([]);
   });
 });
 

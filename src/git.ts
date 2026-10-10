@@ -94,19 +94,54 @@ function gitIdentityArgs(contributorName: string | null): string[] {
   return ["-c", `user.name=${name}`, "-c", `user.email=${emailSlug}@users.noreply.vertaal.local`];
 }
 
-export async function commitAll(
+// Saves (commits) ONLY the files named here. It used to run "git add ." which
+// stages everything in the folder, so any other file sitting there (notes,
+// a settings file with a password in it, someone's unrelated work) would be
+// uploaded to the shared repository by the next Sync. Now:
+//  - "git add -- <files>" stages just those files ("--" means "everything after
+//    this is a file name", so a name that starts with a dash can't be read as
+//    an option).
+//  - "git commit -- <files>" commits just those files, even if something else
+//    happened to be staged in the folder already.
+// An empty list is refused outright, so this can never fall back to "everything".
+export async function commitFiles(
   folderPath: string,
   message: string,
-  contributorName: string | null
+  contributorName: string | null,
+  files: string[]
 ): Promise<{ ok: boolean; output: string }> {
+  if (files.length === 0) {
+    return { ok: false, output: "Nothing was named to be saved, so nothing was committed." };
+  }
   // If staging fails, stop here. Committing anyway could save an older,
   // half-staged set of files and then report success, so this change would
   // quietly be left out of what gets shared.
-  const staged = await runGit(["add", "."], folderPath);
+  const staged = await runGit(["add", "--", ...files], folderPath);
   if (!staged.ok) {
     return { ok: false, output: `Could not prepare the files to be saved (git add failed): ${staged.output}` };
   }
-  return runGit([...gitIdentityArgs(contributorName), "commit", "-m", message], folderPath);
+  return runGit([...gitIdentityArgs(contributorName), "commit", "-m", message, "--", ...files], folderPath);
+}
+
+// Files in the folder that Git sees as new or changed but that Sync does NOT
+// share (everything except the files in `shared`). Used only to show a
+// warning, so if Git can't answer, the answer is simply "none".
+export async function listUnsharedFiles(folderPath: string, shared: string[]): Promise<string[]> {
+  const result = await runGit(["status", "--porcelain", "-z", "-uall"], folderPath);
+  if (!result.ok) return [];
+  // Each entry is "XY path": two status letters, a space, then the path,
+  // separated by NUL characters (-z avoids any quoting of odd names). runGit
+  // trims the whole output, which can eat the leading space of the FIRST entry
+  // (" M name" becomes "M name"), so a one-letter prefix is accepted too.
+  const sharedSet = new Set(shared);
+  const names: string[] = [];
+  for (const entry of result.output.split("\0")) {
+    if (!entry) continue;
+    const match = entry.match(/^[ MADRCUT?!]{2} (.+)$/) ?? entry.match(/^[MADRCUT?!] (.+)$/);
+    const name = match ? match[1] : entry;
+    if (!sharedSet.has(name)) names.push(name);
+  }
+  return names;
 }
 
 export async function push(folderPath: string, token: string | null, remoteUrl: string): Promise<{ ok: boolean; output: string }> {
