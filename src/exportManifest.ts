@@ -9,11 +9,28 @@ import { join } from "@tauri-apps/api/path";
 // stay on disk forever, since nothing had ever written over it since.
 const MANIFEST_RELATIVE_PATH = [".metadata", "vertaal-export-manifest.json"];
 
+// True only for a plain path that stays INSIDE the mod folder. The manifest is
+// just a text file on disk, so nothing in it can be trusted: without this check
+// an entry like "../../Documents/thesis.docx" or "C:\\Users\\me\\x" would be
+// joined onto the mod folder and deleted by the next export. Refused:
+//  - empty names, and names with a hidden NUL character
+//  - absolute paths ("/x", "\\x") and network paths ("\\\\server\\share")
+//  - drive letters ("C:\\x", and also "C:x", which means "relative to drive C")
+//  - any ".." part, written with either kind of slash
+export function isSafeRelativePath(relPath: string): boolean {
+  if (typeof relPath !== "string" || relPath.trim() === "") return false;
+  if (relPath.includes("\0")) return false;
+  if (relPath.startsWith("/") || relPath.startsWith("\\")) return false;
+  if (/^[A-Za-z]:/.test(relPath)) return false;
+  return !relPath.split(/[\\/]/).some((part) => part === "..");
+}
+
 export async function readExportManifest(modRoot: string): Promise<string[]> {
   try {
     const raw = await readTextFile(await join(modRoot, ...MANIFEST_RELATIVE_PATH));
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string") : [];
+    // Entries that are not plain paths inside the mod folder are ignored.
+    return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string" && isSafeRelativePath(p)) : [];
   } catch {
     // No manifest yet (first export of this mod, or an older Vertaal export
     // that predates this feature) — there is nothing to clean up.
@@ -37,6 +54,9 @@ export function computeStaleRelPaths(previousManifest: string[], currentRelPaths
 // it, or a folder was cleared) is not an error.
 export async function removeStaleFiles(modRoot: string, staleRelPaths: string[]): Promise<void> {
   for (const relPath of staleRelPaths) {
+    // A second check right where the deleting happens, so no caller can ever
+    // delete outside the mod folder, whatever list it passes in.
+    if (!isSafeRelativePath(relPath)) continue;
     try {
       await remove(await join(modRoot, relPath));
     } catch {
