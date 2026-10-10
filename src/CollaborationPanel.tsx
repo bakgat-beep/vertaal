@@ -50,8 +50,13 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
     return (
       `Merged ${summary.filesProcessed.length} file(s) (${summary.filesProcessed.join(", ")}): ` +
       `${summary.applied} translation(s) applied, ${summary.skippedLocalNewer} skipped (your local version was newer), ` +
+      `${summary.skippedKeptYourWork} skipped (an AI draft would have replaced your own work), ` +
       `${summary.skippedNoLocalString} skipped (string not found locally), ` +
-      `${summary.glossaryAdded} glossary term(s) added, ${summary.glossaryUpdated} updated.`
+      `${summary.glossaryAdded} glossary term(s) added, ${summary.glossaryUpdated} updated.` +
+      (summary.flaggedForGameCodes > 0
+        ? ` ${summary.flaggedForGameCodes} confirmed translation(s) had game codes that don't match the original, ` +
+          "so they were saved as flagged drafts - see Flagged."
+        : "")
     );
   }
 

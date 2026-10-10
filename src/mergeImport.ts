@@ -6,6 +6,7 @@ import { checkExportMatchesProject } from "./exportCheck";
 import { baselineForImportedTranslation } from "./sourceChange";
 import { matchesProjectExportFile } from "./fileNames";
 import { isAtLeastAsNew } from "./timestamps";
+import { checkTokenIntegrity } from "./tokenIntegrity";
 
 interface PortableTranslation {
   key: string;
@@ -43,6 +44,13 @@ export interface MergeSummary {
   applied: number;
   skippedNoLocalString: number;
   skippedLocalNewer: number;
+  // An incoming AI draft that would have replaced a translation you confirmed
+  // or typed yourself, even though the draft was newer. Your work was kept.
+  skippedKeptYourWork: number;
+  // Of the `applied` ones: confirmed by the collaborator, but a game code
+  // ($VARIABLES$, [functions], icons ...) is missing, extra or repeated compared
+  // with the source text. Saved as a FLAGGED DRAFT instead, so it can't be exported.
+  flaggedForGameCodes: number;
   glossaryAdded: number;
   glossaryUpdated: number;
 }
@@ -68,6 +76,8 @@ export async function importPortableProjectData(project: Project, filePath: stri
     applied: 0,
     skippedNoLocalString: 0,
     skippedLocalNewer: 0,
+    skippedKeptYourWork: 0,
+    flaggedForGameCodes: 0,
     glossaryAdded: 0,
     glossaryUpdated: 0,
   };
@@ -88,9 +98,9 @@ export async function importPortableProjectData(project: Project, filePath: stri
     }
 
     const localTranslation = (await db.select(
-      "SELECT translated_text, updated_at FROM translations WHERE string_key = $1 AND game_id = $2 AND target_language = $3",
+      "SELECT translated_text, updated_at, status FROM translations WHERE string_key = $1 AND game_id = $2 AND target_language = $3",
       [t.key, project.game_id, project.target_language]
-    )) as { translated_text: string; updated_at: string | null }[];
+    )) as { translated_text: string; updated_at: string | null; status: string | null }[];
     const local = localTranslation[0];
 
     // Compared by the moment each represents, not as plain text — the two
@@ -108,21 +118,45 @@ export async function importPortableProjectData(project: Project, filePath: stri
       continue;
     }
 
+    // A machine draft never replaces work a person did. Even when the draft is
+    // newer, a translation you confirmed or typed yourself is kept: the
+    // timestamp only says WHEN something was written, not whether a person
+    // checked it. (A collaborator's newer HUMAN edit still wins, as before.)
+    if (t.status === "ai-suggested" && (local?.status === "human-confirmed" || local?.status === "human-draft")) {
+      summary.skippedKeptYourWork++;
+      continue;
+    }
+
     // What the translation was made against (so a changed source is noticed).
     const baseline = baselineForImportedTranslation(t, localString[0].source_text, data.format_version ?? 1);
 
+    // The same game-code check the Verify button uses (see tokenIntegrity.ts).
+    // A string a collaborator confirmed but whose game codes don't match the
+    // source would be exported into the mod as it is, so it is saved as a
+    // flagged draft instead: their text is kept, nothing is lost, and it
+    // reappears under Flagged for someone to look at.
+    let status = t.status;
+    let flaggedNow = 0;
+    if (t.status === "human-confirmed" && checkTokenIntegrity(localString[0].source_text, t.translated_text).length > 0) {
+      status = "human-draft";
+      flaggedNow = 1;
+      summary.flaggedForGameCodes++;
+    }
+
     await db.execute(
+      // The flag already on this string stays, and a new flag is added on top.
       `INSERT OR REPLACE INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_text_at_translation, flagged)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE((SELECT flagged FROM translations WHERE string_key = $1 AND game_id = $2 AND target_language = $3), 0))`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, MAX(COALESCE((SELECT flagged FROM translations WHERE string_key = $1 AND game_id = $2 AND target_language = $3), 0), $9))`,
       [
         t.key,
         project.game_id,
         project.target_language,
         t.translated_text,
-        t.status,
+        status,
         t.translated_by ?? null,
         t.updated_at ?? new Date().toISOString(),
         baseline,
+        flaggedNow,
       ]
     );
 
@@ -201,6 +235,8 @@ export async function importAllContributorFiles(project: Project, folderPath: st
     applied: 0,
     skippedNoLocalString: 0,
     skippedLocalNewer: 0,
+    skippedKeptYourWork: 0,
+    flaggedForGameCodes: 0,
     glossaryAdded: 0,
     glossaryUpdated: 0,
     filesProcessed: [],
@@ -212,6 +248,8 @@ export async function importAllContributorFiles(project: Project, folderPath: st
     combined.applied += summary.applied;
     combined.skippedNoLocalString += summary.skippedNoLocalString;
     combined.skippedLocalNewer += summary.skippedLocalNewer;
+    combined.skippedKeptYourWork += summary.skippedKeptYourWork;
+    combined.flaggedForGameCodes += summary.flaggedForGameCodes;
     combined.glossaryAdded += summary.glossaryAdded;
     combined.glossaryUpdated += summary.glossaryUpdated;
     combined.filesProcessed.push(fileName);

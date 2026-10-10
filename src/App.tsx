@@ -337,7 +337,11 @@ function App() {
       const summary = await importPortableProjectData(currentProject, filePath as string);
       setStatus(
         `Import complete: ${summary.applied} applied, ${summary.skippedLocalNewer} skipped (your version was newer), ` +
-          `${summary.skippedNoLocalString} skipped (string not found locally), ${summary.glossaryAdded} glossary term(s) added, ${summary.glossaryUpdated} updated.`
+          `${summary.skippedKeptYourWork} skipped (an AI draft would have replaced your own work), ` +
+          `${summary.skippedNoLocalString} skipped (string not found locally), ${summary.glossaryAdded} glossary term(s) added, ${summary.glossaryUpdated} updated.` +
+          (summary.flaggedForGameCodes > 0
+            ? ` ${summary.flaggedForGameCodes} confirmed translation(s) had game codes that don't match the original, so they were saved as flagged drafts - see Flagged.`
+            : "")
       );
       await refreshCounts();
       await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
