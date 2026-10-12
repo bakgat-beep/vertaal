@@ -10,6 +10,7 @@ import { modFolderName } from "./fileNames";
 import { readExportManifest, writeExportManifest, computeStaleRelPaths, removeStaleFiles } from "./exportManifest";
 import type { ExportOutcome, ExportPreflight } from "./ExportSummary";
 import { SQL_OUTDATED, SQL_DRAFT } from "./statusFilters";
+import { splitByGameCodes } from "./exportGuard";
 
 // The ONE definition of "this string goes into the exported mod": it is
 // confirmed by a human, has actual text, and is NOT flagged. Both exporters
@@ -20,18 +21,46 @@ import { SQL_OUTDATED, SQL_DRAFT } from "./statusFilters";
 export const SQL_EXPORTABLE =
   "s.removed_at IS NULL AND t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != '' AND COALESCE(t.flagged, 0) = 0";
 
+// How many keys are listed as examples when strings are held back.
+const HELD_BACK_SAMPLE_SIZE = 10;
+
+// The strings that really go into the mod. One query for both exporters and the
+// "Ready to export?" numbers, followed by the game-code check (see
+// exportGuard.ts): `clean` is what gets written, `heldBack` is confirmed
+// strings whose game codes don't match the source text.
+async function loadExportableRows(db: Awaited<ReturnType<typeof getDb>>, project: Project) {
+  const rows = (await db.select(
+    `SELECT s.key as key, s.file_path as file_path, s.source_text as source_text, t.translated_text as translated_text,
+            CASE WHEN ${SQL_OUTDATED} THEN 1 ELSE 0 END AS outdated
+     FROM strings s
+     JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
+     WHERE ${SQL_EXPORTABLE}
+       AND s.game_id = $1 AND t.target_language = $2`,
+    [project.game_id, project.target_language]
+  )) as { key: string; file_path: string; source_text: string; translated_text: string; outdated: number }[];
+  return splitByGameCodes(rows);
+}
+
+function describeHeldBack(heldBack: { key: string }[]): string {
+  const keys = heldBack.slice(0, HELD_BACK_SAMPLE_SIZE).map((r) => r.key);
+  return `${heldBack.length} confirmed string(s) have game codes that don't match the original text (for example: ${keys.join(", ")})`;
+}
+
 // Numbers for the "Ready to export?" dialog. `confirmed` is what will really
-// be written; `flagged` is confirmed strings being held back by their flag;
-// `outdated` is how many of the exported strings were confirmed before their
-// source text changed; `drafts` is strings that have text but were never
-// confirmed (AI drafts and your own unconfirmed edits), which are left out.
+// be written (confirmed, not flagged, and passing the game-code check);
+// `flagged` is confirmed strings being held back by their flag;
+// `heldBackForGameCodes` is confirmed strings held back because a game code
+// ($VARIABLES$, [functions], icons ...) is missing, extra or repeated compared
+// with the source text, with a few of their keys in `heldBackKeys` so they can
+// be found; `outdated` is how many of the exported strings were confirmed
+// before their source text changed; `drafts` is strings that have text but
+// were never confirmed (AI drafts and your own unconfirmed edits), which are
+// left out.
 export async function getExportPreflight(project: Project): Promise<ExportPreflight> {
   const db = await getDb();
-  const result = (await db.select(
+  const counts = (await db.select(
     `SELECT
        (SELECT COUNT(*) FROM strings WHERE game_id = $1 AND removed_at IS NULL) AS total,
-       COALESCE(SUM(CASE WHEN ${SQL_EXPORTABLE} THEN 1 ELSE 0 END), 0) AS confirmed,
-       COALESCE(SUM(CASE WHEN ${SQL_EXPORTABLE} AND ${SQL_OUTDATED} THEN 1 ELSE 0 END), 0) AS outdated,
        COALESCE(SUM(CASE WHEN t.status = 'human-confirmed' AND t.translated_text IS NOT NULL AND t.translated_text != ''
          AND t.flagged = 1 AND s.removed_at IS NULL THEN 1 ELSE 0 END), 0) AS flagged,
        COALESCE(SUM(CASE WHEN ${SQL_DRAFT} AND TRIM(COALESCE(t.translated_text, '')) != '' THEN 1 ELSE 0 END), 0) AS drafts
@@ -39,8 +68,17 @@ export async function getExportPreflight(project: Project): Promise<ExportPrefli
      JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
      WHERE s.game_id = $1 AND t.target_language = $2`,
     [project.game_id, project.target_language]
-  )) as ExportPreflight[];
-  return result[0];
+  )) as { total: number; flagged: number; drafts: number }[];
+  const { clean, heldBack } = await loadExportableRows(db, project);
+  return {
+    total: counts[0]?.total ?? 0,
+    confirmed: clean.length,
+    outdated: clean.filter((r) => r.outdated === 1).length,
+    flagged: counts[0]?.flagged ?? 0,
+    drafts: counts[0]?.drafts ?? 0,
+    heldBackForGameCodes: heldBack.length,
+    heldBackKeys: heldBack.slice(0, HELD_BACK_SAMPLE_SIZE).map((r) => r.key),
+  };
 }
 
 // Both exportMod() and exportModCompanion() write the same shape of output —
@@ -110,17 +148,16 @@ export async function exportMod(currentProject: Project, onStatus: (msg: string)
     onStatus("Gathering translated strings...");
     const db = await getDb();
 
-    const translated = (await db.select(
-      `SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
-       FROM strings s
-       JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-       WHERE ${SQL_EXPORTABLE}
-         AND s.game_id = $1 AND t.target_language = $2`,
-      [currentProject.game_id, currentProject.target_language]
-    )) as { key: string; file_path: string; translated_text: string }[];
+    const { clean: translated, heldBack } = await loadExportableRows(db, currentProject);
 
     if (translated.length === 0) {
-      return { status: "error", error: "No confirmed translations to export yet." };
+      return {
+        status: "error",
+        error:
+          heldBack.length > 0
+            ? `Nothing could be exported: ${describeHeldBack(heldBack)}. Fix those strings (the Verify button shows what is wrong) and export again.`
+            : "No confirmed translations to export yet.",
+      };
     }
 
     const nativeCode = gm.nativeLanguages[currentProject.target_language.toLowerCase()];
@@ -177,6 +214,8 @@ export async function exportMod(currentProject: Project, onStatus: (msg: string)
       filesWritten: currentRelPaths.length,
       destPath: modRoot,
       unmapped: translated.length - writtenCount,
+      heldBackForGameCodes: heldBack.length,
+      heldBackKeys: heldBack.slice(0, HELD_BACK_SAMPLE_SIZE).map((r) => r.key),
     };
   } catch (err) {
     return { status: "error", error: String(err) };
@@ -209,17 +248,16 @@ export async function exportModCompanion(
     onStatus("Gathering translated strings...");
     const db = await getDb();
 
-    const translated = (await db.select(
-      `SELECT s.key as key, s.file_path as file_path, t.translated_text as translated_text
-       FROM strings s
-       JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id
-       WHERE ${SQL_EXPORTABLE}
-         AND s.game_id = $1 AND t.target_language = $2`,
-      [currentProject.game_id, currentProject.target_language]
-    )) as { key: string; file_path: string; translated_text: string }[];
+    const { clean: translated, heldBack } = await loadExportableRows(db, currentProject);
 
     if (translated.length === 0) {
-      return { status: "error", error: "No confirmed translations to export yet." };
+      return {
+        status: "error",
+        error:
+          heldBack.length > 0
+            ? `Nothing could be exported: ${describeHeldBack(heldBack)}. Fix those strings (the Verify button shows what is wrong) and export again.`
+            : "No confirmed translations to export yet.",
+      };
     }
 
     const nativeCode = gm.nativeLanguages[currentProject.target_language.toLowerCase()];
@@ -272,6 +310,8 @@ export async function exportModCompanion(
       filesWritten: currentRelPaths.length,
       destPath: modRoot,
       unmapped: translated.length - writtenCount,
+      heldBackForGameCodes: heldBack.length,
+      heldBackKeys: heldBack.slice(0, HELD_BACK_SAMPLE_SIZE).map((r) => r.key),
     };
   } catch (err) {
     return { status: "error", error: String(err) };

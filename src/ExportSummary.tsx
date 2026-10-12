@@ -9,10 +9,22 @@ export interface ExportPreflight {
   outdated: number;
   flagged: number;
   drafts: number;
+  // Confirmed strings left out because a game code does not match the original,
+  // and a few of their keys so they can be found (see exportGuard.ts).
+  heldBackForGameCodes: number;
+  heldBackKeys: string[];
 }
 
 export type ExportOutcome =
-  | { status: "ok"; stringsWritten: number; filesWritten: number; destPath: string; unmapped: number }
+  | {
+      status: "ok";
+      stringsWritten: number;
+      filesWritten: number;
+      destPath: string;
+      unmapped: number;
+      heldBackForGameCodes: number;
+      heldBackKeys: string[];
+    }
   | { status: "cancelled" }
   | { status: "error"; error: string };
 
@@ -39,7 +51,14 @@ export default function ExportSummary({
 }: Props) {
   const [phase, setPhase] = useState<Phase>("preflight");
   const [result, setResult] = useState
-    <{ stringsWritten: number; filesWritten: number; destPath: string; unmapped: number } | null
+    <{
+      stringsWritten: number;
+      filesWritten: number;
+      destPath: string;
+      unmapped: number;
+      heldBackForGameCodes: number;
+      heldBackKeys: string[];
+    } | null
   >(null);
   const [error, setError] = useState("");
 
@@ -56,6 +75,8 @@ export default function ExportSummary({
         filesWritten: outcome.filesWritten,
         destPath: outcome.destPath,
         unmapped: outcome.unmapped,
+        heldBackForGameCodes: outcome.heldBackForGameCodes,
+        heldBackKeys: outcome.heldBackKeys,
       });
       setPhase("success");
     } else if (outcome.status === "cancelled") {
@@ -104,6 +125,15 @@ export default function ExportSummary({
               <p style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
                 <Icon name="flag" size={14} /> {preflight.flagged.toLocaleString()} confirmed string(s) are flagged, so they will be left out
                 of the export. Clear the flag to include them.
+              </p>
+            )}
+
+            {preflight.heldBackForGameCodes > 0 && (
+              <p style={{ color: "#e05a5a", fontSize: "0.85rem" }}>
+                <Icon name="warning" size={14} /> {preflight.heldBackForGameCodes.toLocaleString()} confirmed string(s) will be left out because a game code
+                ($VARIABLES$, [functions], icons...) is missing, extra or repeated compared with the original text, which
+                could break the game. Search for them by key (for example: {preflight.heldBackKeys.join(", ")}
+                {preflight.heldBackForGameCodes > preflight.heldBackKeys.length ? ", ..." : ""}), fix the codes, and export again.
               </p>
             )}
 
@@ -162,6 +192,14 @@ export default function ExportSummary({
             {preflight.drafts > 0 && (
               <p style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>
                 {preflight.drafts.toLocaleString()} unconfirmed draft(s) were not included.
+              </p>
+            )}
+
+            {result.heldBackForGameCodes > 0 && (
+              <p style={{ color: "#e05a5a", fontSize: "0.85rem" }}>
+                <Icon name="warning" size={14} /> {result.heldBackForGameCodes.toLocaleString()} confirmed string(s) were NOT exported because their game
+                codes don't match the original text (for example: {result.heldBackKeys.join(", ")}
+                {result.heldBackForGameCodes > result.heldBackKeys.length ? ", ..." : ""}).
               </p>
             )}
 
