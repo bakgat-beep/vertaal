@@ -5,8 +5,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const files = new Map<string, string>();
 const dirs = new Map<string, string[]>(); // folder path -> child names (files and subfolders)
 
+const unreadableDirs = new Set<string>(); // folders the operating system refuses to open
 vi.mock("@tauri-apps/plugin-fs", () => ({
   readDir: async (dirPath: string) => {
+    if (unreadableDirs.has(dirPath)) throw new Error("os error 5: Access is denied.");
     const children = dirs.get(dirPath) ?? [];
     return children.map((name) => ({ name, isDirectory: dirs.has(`${dirPath}\\${name}`) }));
   },
@@ -16,6 +18,7 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
   },
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => "C:\\install") }));
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 vi.mock("@tauri-apps/api/path", () => ({ join: async (...parts: string[]) => parts.join("\\") }));
 
 const strings: any[] = [];
@@ -146,5 +149,37 @@ describe("importProjectFolder refuses to overwrite another source language's str
     setupFolder({ "a_l_english.yml": `l_english:\n greeting:0 "Hello"\n` });
     const outcome = await importProjectFolder(project, gm, () => {});
     expect(outcome.status).toBe("ok");
+  });
+});
+
+
+describe("importProjectFolder reports a folder it cannot read instead of throwing", () => {
+  beforeEach(() => {
+    unreadableDirs.clear();
+    dirs.clear();
+    files.clear();
+    strings.length = 0;
+  });
+
+  it("the chosen folder itself is refused by the operating system", async () => {
+    unreadableDirs.add("C:\\install");
+    const outcome = await importProjectFolder(project, gm, () => {});
+    expect(outcome.status).toBe("error");
+    if (outcome.status === "error") expect(outcome.error).toMatch(/access is denied/i);
+  });
+
+  it("a subfolder inside it is refused", async () => {
+    dirs.set("C:\\install", ["locked"]);
+    dirs.set("C:\\install\\locked", []);
+    unreadableDirs.add("C:\\install\\locked");
+    const outcome = await importProjectFolder(project, gm, () => {});
+    expect(outcome.status).toBe("error");
+  });
+
+  it("the folder picker itself failing is reported too", async () => {
+    vi.mocked(openDialog).mockRejectedValueOnce(new Error("dialog crashed"));
+    const outcome = await importProjectFolder(project, gm, () => {});
+    expect(outcome.status).toBe("error");
+    if (outcome.status === "error") expect(outcome.error).toMatch(/dialog crashed/);
   });
 });

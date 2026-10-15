@@ -1,0 +1,44 @@
+name: Check
+
+# Runs on every push to main and on every pull request: type-check, run all the
+# tests, and look for known security problems in the packages the app ships with.
+# It never builds an installer or publishes anything (that is release.yml).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # The tests do not need Windows (they use in-memory stand-ins for the database
+    # and files), and Linux runners start faster.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # "npm ci" installs exactly what package-lock.json says (and fails if
+      # package.json and the lock file disagree), unlike "npm install".
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Run the tests
+        run: npm test
+
+      # Only the packages that end up inside the app; a problem in a build-only
+      # tool should not block a change to the app itself.
+      - name: Check shipped packages for known security problems
+        run: npm audit --omit=dev

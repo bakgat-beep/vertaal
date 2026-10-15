@@ -12,7 +12,6 @@ interface UseEditorRowsParams {
   contributorName: string | null;
   selectedRow: EditorRow | null;
   setSelectedRow: (row: EditorRow | null) => void;
-  loadCategories: () => Promise<void>;
   refreshCounts: (options?: { statusOnly?: boolean }) => Promise<void>;
   setStatus: (status: string) => void;
 }
@@ -40,7 +39,6 @@ export function useEditorRows({
   contributorName,
   selectedRow,
   setSelectedRow,
-  loadCategories,
   refreshCounts,
   setStatus,
 }: UseEditorRowsParams) {
@@ -235,8 +233,9 @@ export function useEditorRows({
     draftsRef.current = initialDrafts;
     setDrafts(initialDrafts);
 
-    await loadCategories();
-    scheduleCountsRefresh(false); // the numbers at the top of the sidebar too
+    // Re-count the sidebar numbers and categories in the background, so showing
+    // the page never waits for the counting (several loads in a row share one).
+    scheduleCountsRefresh(true);
     setStatus(
       batch.length === 0
         ? "No strings to show here."

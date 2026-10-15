@@ -32,6 +32,7 @@ import { getProjectProvider } from "./providers";
 import AppSettings from "./AppSettings";
 import ProjectSettings from "./ProjectSettings";
 import { exportMod, getExportPreflight } from "./export";
+import { reportErrors } from "./reportErrors";
 import { translateAndSave } from "./translate";
 import { openPath } from "@tauri-apps/plugin-opener";
 import ExportSummary, { type ExportPreflight, type ExportOutcome } from "./ExportSummary";
@@ -81,7 +82,6 @@ function App() {
     categories,
     expandedCategories,
     refreshCounts,
-    loadCategories,
     toggleCategoryExpanded,
   } = useProjectStats(currentProject);
 
@@ -112,7 +112,6 @@ function App() {
     contributorName: contributorName ?? null, // "still loading" treated as "not yet known" here; the app shows nothing else until it resolves
     selectedRow,
     setSelectedRow,
-    loadCategories,
     refreshCounts,
     setStatus,
   });
@@ -189,7 +188,8 @@ function App() {
 
   // --- Import ---
 
-  async function importFolder() {
+  const importFolder = () => reportErrors(setStatus, "Import", importFolderInner);
+  async function importFolderInner() {
     if (!currentProject) return;
     const gm = adapter();
     if (!gm) return;
@@ -260,14 +260,16 @@ function App() {
   }
 
 
-  async function handleViewHistory() {
+  const handleViewHistory = () => reportErrors(setStatus, "Opening History", handleViewHistoryInner);
+  async function handleViewHistoryInner() {
     if (!selectedRow || !currentProject) return;
     const entries = await loadHistory(selectedRow.key, selectedRow.game_id, currentProject.target_language);
     setHistoryEntries(entries);
     openPanel("history");
   }
 
-  async function revertToVersion(text: string) {
+  const revertToVersion = (text: string) => reportErrors(setStatus, "Revert", () => revertToVersionInner(text));
+  async function revertToVersionInner(text: string) {
     if (!selectedRow || !currentProject) return;
     const db = await getDb();
     const lang = currentProject.target_language;
@@ -299,7 +301,8 @@ function App() {
     setStatus(`Reverted ${selectedRow.key} to a previous version.`);
   }
 
-  async function handleBackupNow() {
+  const handleBackupNow = () => reportErrors(setStatus, "Backup", handleBackupNowInner);
+  async function handleBackupNowInner() {
     const docs = await documentDir();
     const defaultPath = await join(docs, `vertaal-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.db`);
     const chosenPath = await save({ defaultPath });
@@ -313,7 +316,8 @@ function App() {
     }
   }
 
-  async function handleExportData() {
+  const handleExportData = () => reportErrors(setStatus, "Exporting project data", handleExportDataInner);
+  async function handleExportDataInner() {
     if (!currentProject) return;
     const docs = await documentDir();
     const defaultPath = await join(docs, `${currentProject.game_id}-${currentProject.target_language}-export.json`.replace(/[<>:"/\\|?*]/g, "_"));
@@ -328,7 +332,8 @@ function App() {
     }
   }
   
-  async function handleImportData() {
+  const handleImportData = () => reportErrors(setStatus, "Importing project data", handleImportDataInner);
+  async function handleImportDataInner() {
     if (!currentProject) return;
     const filePath = await open({ multiple: false, filters: [{ name: "Vertaal export", extensions: ["json"] }] });
     if (!filePath) return;
@@ -361,7 +366,8 @@ function App() {
     }
   }
 
-  async function openExportModal() {
+const openExportModal = () => reportErrors(setStatus, "Preparing the export summary", openExportModalInner);
+async function openExportModalInner() {
     if (!currentProject) return;
     await flushWrites();
     setExportPreflight(await getExportPreflight(currentProject));
@@ -375,7 +381,8 @@ function App() {
 
   // --- AI translation ---
 
-  async function aiTranslateRow(row: EditorRow) {
+const aiTranslateRow = (row: EditorRow) => reportErrors(setStatus, "AI translation", () => aiTranslateRowInner(row));
+async function aiTranslateRowInner(row: EditorRow) {
     await flushWrites();
     // Ask first if the box holds something a person wrote or confirmed —
     // but not when it only holds an untouched AI draft (that's fine to redo).
@@ -399,7 +406,8 @@ function App() {
     setStatus(`AI translated ${row.key}.`);
   }
 
-  async function confirmAllOnPage() {
+const confirmAllOnPage = () => reportErrors(setStatus, "Confirm all", confirmAllOnPageInner);
+async function confirmAllOnPageInner() {
     if (!currentProject) return;
     await flushWrites();
     // What counts as "the translation" for each row is whatever is in its box
@@ -450,7 +458,8 @@ function App() {
   // and flags any that have a problem. Running it again is safe — it never
   // un-flags anything, so a string you've already reviewed and re-confirmed
   // stays fixed.
-  async function handleVerifyConfirmed() {
+const handleVerifyConfirmed = () => reportErrors(setStatus, "Verify", handleVerifyConfirmedInner);
+async function handleVerifyConfirmedInner() {
     if (!currentProject) return;
     await flushWrites();
     setStatus("Verifying confirmed strings...");

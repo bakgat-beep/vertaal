@@ -17,9 +17,26 @@ describe("safeFileName", () => {
   it("falls back to a default name if nothing is left", () => {
     expect(safeFileName("...")).toBe("export"); // only dots, all stripped as trailing dots
   });
+
+  it("gives Windows' reserved device names a leading underscore, in any capitals and with an extension", () => {
+    for (const name of ["con", "CON", "Prn", "aux", "NUL", "com1", "COM9", "lpt1", "LPT9", "con.txt", "Aux.tar.gz"]) {
+      expect(safeFileName(name)).toBe(`_${name}`);
+    }
+  });
+
+  it("leaves names that only look similar unchanged", () => {
+    for (const name of ["console", "com0", "com10", "lpt", "my-con", "con-mod", "nullable", "eu5"]) {
+      expect(safeFileName(name)).toBe(name);
+    }
+  });
 });
 
 describe("modFolderName", () => {
+  it("a mod called Con, Aux or Nul still gets a folder Windows can create", () => {
+    expect(modFolderName("Con")).toBe("_con");
+    expect(modFolderName("AUX")).toBe("_aux");
+  });
+
   it("lower-cases and hyphenates spaces, as before", () => {
     expect(modFolderName("My Cool Mod")).toBe("my-cool-mod");
   });

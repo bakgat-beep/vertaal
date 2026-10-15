@@ -42,6 +42,22 @@ export function useBatchTranslation({
   // Cancels a request that is already waiting for the translation provider
   // when Stop is pressed (see stopBatch), instead of waiting for its reply.
   const abortRef = useRef<AbortController | null>(null);
+  // True from the moment any batch action starts until it has completely
+  // finished (backup and set-up included). A ref, not screen state, because it
+  // has to be right immediately: a second click a moment after the first sees
+  // it at once, whereas screen state only changes on the next redraw.
+  const busyRef = useRef(false);
+
+  // Claims the "one batch at a time" slot. Returns false (and says why) if a
+  // batch action is already in progress.
+  function claimBatchSlot(): boolean {
+    if (busyRef.current) {
+      setStatus("A batch is already running - press Stop first, or wait for it to finish.");
+      return false;
+    }
+    busyRef.current = true;
+    return true;
+  }
 
   function beginRun() {
     stopRequestedRef.current = false;
@@ -70,6 +86,7 @@ export function useBatchTranslation({
       setStatus("No untranslated or AI-suggested strings on this page.");
       return;
     }
+    if (!claimBatchSlot()) return;
     setBatchRunning(true);
     const signal = beginRun();
     setBatchProgress({ done: 0, total: targets.length });
@@ -141,6 +158,7 @@ export function useBatchTranslation({
     } catch (err) {
       setStatus(`Page batch stopped unexpectedly: ${err}`);
     } finally {
+      busyRef.current = false;
       setBatchRunning(false);
       refreshCounts();
     }
@@ -158,57 +176,65 @@ export function useBatchTranslation({
     describe: string
   ) {
     if (!currentProject) return;
-    const db = await getDb();
-    const gameId = currentProject.game_id;
-    const lang = currentProject.target_language;
+    if (!claimBatchSlot()) return;
+    try {
+      const db = await getDb();
+      const gameId = currentProject.game_id;
+      const lang = currentProject.target_language;
 
-    const candidates = (await db.select(
-      `SELECT s.key as key, s.source_text as source_text, t.status as status,
-              t.translated_text as translated_text, t.translated_by as translated_by
-       FROM strings s
-       LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
-       WHERE s.game_id = $2
-         AND (t.flagged IS NULL OR t.flagged = 0)
-         AND (t.status IS NULL OR t.status IN ('untranslated', 'ai-suggested'))`,
-      [lang, gameId]
-    )) as {
-      key: string;
-      source_text: string;
-      status: string | null;
-      translated_text: string | null;
-      translated_by: string | null;
-    }[];
+      const candidates = (await db.select(
+        `SELECT s.key as key, s.source_text as source_text, t.status as status,
+                t.translated_text as translated_text, t.translated_by as translated_by
+         FROM strings s
+         LEFT JOIN translations t ON s.key = t.string_key AND s.game_id = t.game_id AND t.target_language = $1
+         WHERE s.game_id = $2
+           AND (t.flagged IS NULL OR t.flagged = 0)
+           AND (t.status IS NULL OR t.status IN ('untranslated', 'ai-suggested'))`,
+        [lang, gameId]
+      )) as {
+        key: string;
+        source_text: string;
+        status: string | null;
+        translated_text: string | null;
+        translated_by: string | null;
+      }[];
 
-    const matches = candidates.filter((c) => shouldConfirmAsIs(c, qualifies));
+      const matches = candidates.filter((c) => shouldConfirmAsIs(c, qualifies));
 
-    if (matches.length === 0) {
-      setStatus(`No ${label} found that still need confirming.`);
-      return;
-    }
+      if (matches.length === 0) {
+        setStatus(`No ${label} found that still need confirming.`);
+        return;
+      }
 
-    const proceed = await confirm(
-      `Found ${matches.length} string(s) ${describe}. Confirm them all exactly as they are (the original text becomes the confirmed translation)?`
-    );
-    if (!proceed) return;
-
-    setStatus(`Confirming ${matches.length} strings...`);
-    for (const m of matches) {
-      await db.execute(
-        `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_text_at_translation)
-         VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), $6)
-         ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET
-           translated_text = excluded.translated_text,
-           status = 'human-confirmed',
-           translated_by = excluded.translated_by,
-           updated_at = excluded.updated_at,
-           source_text_at_translation = excluded.source_text_at_translation`,
-        [m.key, gameId, lang, m.source_text, `auto (${kind})`, m.source_text]
+      const proceed = await confirm(
+        `Found ${matches.length} string(s) ${describe}. Confirm them all exactly as they are (the original text becomes the confirmed translation)?`
       );
-    }
+      if (!proceed) return;
 
-    refreshCounts();
-    await reloadCurrentPage();
-    setStatus(`Confirmed ${matches.length} strings as they are.`);
+      setStatus(`Confirming ${matches.length} strings...`);
+      for (const m of matches) {
+        await db.execute(
+          `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, source_text_at_translation)
+           VALUES ($1, $2, $3, $4, 'human-confirmed', $5, datetime('now'), $6)
+           ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET
+             translated_text = excluded.translated_text,
+             status = 'human-confirmed',
+             translated_by = excluded.translated_by,
+             updated_at = excluded.updated_at,
+             source_text_at_translation = excluded.source_text_at_translation`,
+          [m.key, gameId, lang, m.source_text, `auto (${kind})`, m.source_text]
+        );
+      }
+
+      refreshCounts();
+      await reloadCurrentPage();
+      setStatus(`Confirmed ${matches.length} strings as they are.`);
+    } catch (err) {
+      setStatus(`Confirming ${label} failed: ${err instanceof Error ? err.message : err}`);
+      refreshCounts();
+    } finally {
+      busyRef.current = false;
+    }
   }
 
   // Strings made only of game code (icons, variables, functions): nothing to translate.
@@ -234,21 +260,28 @@ export function useBatchTranslation({
       setStatus("Enter a valid number of strings to translate.");
       return;
     }
-    setStatus("Backing up database before starting...");
-    try {
-      await backupDatabase();
-    } catch (err) {
-      setStatus(`Warning: backup failed (${err}). Continuing anyway.`);
-    }
-
+    if (!claimBatchSlot()) return;
+    // The run is marked as running BEFORE the backup, which can take a while on
+    // a big database: a second click, or Stop, during the backup must already
+    // count. (Before, a second click started a second run, and Stop was lost
+    // when the run began.)
     setBatchRunning(true);
     const signal = beginRun();
     setBatchProgress({ done: 0, total: targetCount });
-
-    const db = await getDb();
     let done = 0;
 
     try {
+      setStatus("Backing up database before starting...");
+      try {
+        await backupDatabase();
+      } catch (err) {
+        setStatus(`Warning: backup failed (${err}). Continuing anyway.`);
+      }
+
+      // Inside the try, so a database that cannot be opened ends the run with a
+      // message and releases the buttons, rather than leaving them stuck.
+      const db = await getDb();
+
       let distinctFailureStreak = 0;
       let stoppedMessage = "";
 
@@ -352,6 +385,7 @@ export function useBatchTranslation({
     } catch (err) {
       setStatus(`Overnight batch stopped unexpectedly after ${done} translated: ${err}`);
     } finally {
+      busyRef.current = false;
       setBatchRunning(false);
       refreshCounts();
     }
@@ -359,6 +393,7 @@ export function useBatchTranslation({
 
   async function batchRerunAIUnconfirmed() {
     if (!currentProject) return;
+    if (!claimBatchSlot()) return;
     setBatchRunning(true);
     const signal = beginRun();
     let done = 0;
@@ -443,6 +478,7 @@ export function useBatchTranslation({
     } catch (err) {
       setStatus(`Re-run stopped unexpectedly after ${done} translated: ${err}`);
     } finally {
+      busyRef.current = false;
       setBatchRunning(false);
       refreshCounts();
     }

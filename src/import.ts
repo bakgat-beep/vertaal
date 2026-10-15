@@ -6,6 +6,10 @@ import { parseLocFile } from "./parser";
 import type { Project } from "./types";
 import type { GameAdapter } from "./games/types";
 
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export async function findLocFiles(dirPath: string, sourceLanguage: string): Promise<string[]> {
   const entries = await readDir(dirPath);
   entries.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
@@ -91,17 +95,34 @@ export async function importProjectFolder(
 ): Promise<ImportOutcome> {
   const isMod = currentProject.project_type === "mod";
   onStatus("Waiting for folder selection...");
-  const folderPath = await open({
-    directory: true,
-    multiple: false,
-    defaultPath: currentProject.install_path ?? undefined,
-  });
+  let folderPath: string | string[] | null;
+  try {
+    folderPath = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: currentProject.install_path ?? undefined,
+    });
+  } catch (err) {
+    return { status: "error", error: `The folder picker could not be opened: ${errorText(err)}` };
+  }
   if (!folderPath) {
     return { status: "cancelled" };
   }
 
+  // Scanning can fail part-way (a folder Windows won't let Vertaal open, a drive
+  // that has gone away). That is reported as a message, never thrown.
   onStatus("Scanning folder for localization files... (please wait!)");
-  const files = await findLocFiles(folderPath as string, currentProject.source_language);
+  let files: string[];
+  try {
+    files = await findLocFiles(folderPath as string, currentProject.source_language);
+  } catch (err) {
+    return {
+      status: "error",
+      error:
+        `Could not read that folder: ${errorText(err)}. It may be protected, or on a drive that is not available. ` +
+        "Nothing was imported - try choosing a different folder.",
+    };
+  }
   if (files.length === 0) {
     return { status: "no-files-found" };
   }

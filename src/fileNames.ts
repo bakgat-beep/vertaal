@@ -10,7 +10,14 @@ export function safeFileName(name: string): string {
   const cleaned = name
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
     .replace(/[. ]+$/g, ""); // Windows also dislikes names ending in a dot or space
-  return cleaned === "" ? "export" : cleaned;
+  if (cleaned === "") return "export";
+  // Windows also reserves a few old device names (CON, PRN, AUX, NUL, COM1-9,
+  // LPT1-9), with or without an extension ("con.txt" is just as bad), and a
+  // folder with such a name cannot be created. A mod called "Con" or "Aux" is
+  // plausible, so give those a leading underscore. Ordinary names are unchanged.
+  const stem = cleaned.split(".")[0].replace(/ +$/, "");
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) return `_${cleaned}`;
+  return cleaned;
 }
 
 // A small, fixed fingerprint of a piece of text, written as 6 letters/digits.
