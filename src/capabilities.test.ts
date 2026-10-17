@@ -47,13 +47,17 @@ describe("running programs (shell:allow-execute)", () => {
   const declared = scopeFor("shell:allow-execute").flatMap((p) => (p.allow as { name: string }[]).map((a) => a.name));
 
   // A program name that the code uses but the list does not declare fails only
-  // when that feature is used, with an unhelpful "not allowed" message.
-  it("every program name used with Command.create is declared", () => {
+  // when that feature is used, with an unhelpful "not allowed" message. Git
+  // commands are named where they are run: runGit("git-push", ...). (That every
+  // call is also accepted with exactly its arguments is checked in gitPermissions.test.ts.)
+  it("every program name used with runGit or Command.create is declared", () => {
     const used = new Set<string>();
     for (const text of Object.values(sources)) {
+      for (const m of text.matchAll(/runGit\(\s*"([^"]+)"/g)) used.add(m[1]);
       for (const m of text.matchAll(/Command\.create\(\s*"([^"]+)"/g)) used.add(m[1]);
     }
     expect(used.size).toBeGreaterThan(0);
     for (const name of used) expect(declared).toContain(name);
+    expect(declared).not.toContain("run-git");
   });
 });

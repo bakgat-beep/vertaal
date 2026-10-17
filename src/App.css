@@ -1223,3 +1223,11 @@ textarea::placeholder {
   border-radius: 8px;
   padding: 1rem 1.1rem;
 }
+/* Spacing for an icon sitting next to a button's or message's text. */
+.icon-before {
+  margin-right: 0.35em;
+}
+
+.icon-after {
+  margin-left: 0.35em;
+}

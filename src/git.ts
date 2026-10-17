@@ -106,7 +106,16 @@ export function tokenCredentialArgs(): string[] {
   ];
 }
 
+// Every git command Vertaal runs has its own entry in the app's permission list
+// (src-tauri/capabilities/default.json), named here as `scope`, that spells out
+// exactly which arguments are allowed. There is no entry that allows "any git
+// command", so git options that can run other programs (-c core.sshCommand=...,
+// --upload-pack=...) are refused by the app itself. The commands that use the
+// GitHub token have a second entry, "<scope>-token", which also carries the four
+// credential arguments. If a command here changes, its entry there must change
+// too: src/gitPermissions.test.ts checks that they agree.
 async function runGit(
+  scope: string,
   args: string[],
   cwd: string,
   token: string | null = null
@@ -117,7 +126,7 @@ async function runGit(
     const env: Record<string, string> = { GIT_TERMINAL_PROMPT: "0" };
     if (token) env[TOKEN_ENV_NAME] = token;
     const fullArgs = token ? [...tokenCredentialArgs(), ...args] : args;
-    const cmd = Command.create("run-git", fullArgs, { cwd, env });
+    const cmd = Command.create(token ? `${scope}-token` : scope, fullArgs, { cwd, env });
     const result = await cmd.execute();
     const output = redactCredentials(fullArgs, (result.stdout + result.stderr).trim(), token);
     return { ok: result.code === 0, output };
@@ -127,12 +136,12 @@ async function runGit(
 }
 
 export async function checkGitAvailable(): Promise<string | null> {
-  const { ok, output } = await runGit(["--version"], ".");
+  const { ok, output } = await runGit("git-version", ["--version"], ".");
   return ok ? output : null;
 }
 
 export async function initRepo(folderPath: string): Promise<{ ok: boolean; output: string }> {
-  return runGit(["init"], folderPath);
+  return runGit("git-init", ["init"], folderPath);
 }
 
 export async function cloneRepo(url: string, destFolder: string): Promise<{ ok: boolean; output: string }> {
@@ -140,17 +149,17 @@ export async function cloneRepo(url: string, destFolder: string): Promise<{ ok: 
   if (problem) return { ok: false, output: problem };
   // Clones into destFolder itself (".") rather than creating a nested subfolder,
   // so destFolder is expected to already exist and be empty.
-  return runGit(["clone", url, "."], destFolder);
+  return runGit("git-clone", ["clone", url, "."], destFolder);
 }
 
 export async function setRemote(folderPath: string, url: string): Promise<{ ok: boolean; output: string }> {
   const problem = checkRemoteUrl(url);
   if (problem) return { ok: false, output: problem };
-  const existing = await runGit(["remote"], folderPath);
+  const existing = await runGit("git-remote-list", ["remote"], folderPath);
   if (existing.output.includes("origin")) {
-    return runGit(["remote", "set-url", "origin", url], folderPath);
+    return runGit("git-remote-set-url", ["remote", "set-url", "origin", url], folderPath);
   }
-  return runGit(["remote", "add", "origin", url], folderPath);
+  return runGit("git-remote-add", ["remote", "add", "origin", url], folderPath);
 }
 
 // A commit needs SOME identity configured, and on a fresh Git install (no
@@ -189,18 +198,18 @@ export async function commitFiles(
   // If staging fails, stop here. Committing anyway could save an older,
   // half-staged set of files and then report success, so this change would
   // quietly be left out of what gets shared.
-  const staged = await runGit(["add", "--", ...files], folderPath);
+  const staged = await runGit("git-add", ["add", "--", ...files], folderPath);
   if (!staged.ok) {
     return { ok: false, output: `Could not prepare the files to be saved (git add failed): ${staged.output}` };
   }
-  return runGit([...gitIdentityArgs(contributorName), "commit", "-m", message, "--", ...files], folderPath);
+  return runGit("git-commit", [...gitIdentityArgs(contributorName), "commit", "-m", message, "--", ...files], folderPath);
 }
 
 // Files in the folder that Git sees as new or changed but that Sync does NOT
 // share (everything except the files in `shared`). Used only to show a
 // warning, so if Git can't answer, the answer is simply "none".
 export async function listUnsharedFiles(folderPath: string, shared: string[]): Promise<string[]> {
-  const result = await runGit(["status", "--porcelain", "-z", "-uall"], folderPath);
+  const result = await runGit("git-status", ["status", "--porcelain", "-z", "-uall"], folderPath);
   if (!result.ok) return [];
   // Each entry is "XY path": two status letters, a space, then the path,
   // separated by NUL characters (-z avoids any quoting of odd names). runGit
@@ -222,7 +231,7 @@ export async function push(folderPath: string, token: string | null, remoteUrl: 
   // tokenCredentialArgs above, and only for github.com (see prepareRemote).
   const remote = prepareRemote(token, remoteUrl);
   if (remote.problem) return { ok: false, output: remote.problem };
-  const result = await runGit(["push", remote.target, "HEAD"], folderPath, remote.token);
+  const result = await runGit("git-push", ["push", remote.target, "HEAD"], folderPath, remote.token);
   return remote.tokenHeldBack && !result.ok ? { ...result, output: result.output + TOKEN_HELD_BACK_NOTE } : result;
 }
 
@@ -262,6 +271,7 @@ export async function pull(
   // commit (whenever it's not a simple fast-forward), which needs an
   // identity exactly like any other commit — see gitIdentityArgs above.
   const result = await runGit(
+    "git-pull",
     [...gitIdentityArgs(contributorName), "pull", "--no-rebase", "--allow-unrelated-histories", target, "HEAD"],
     folderPath,
     remote.token
@@ -272,7 +282,7 @@ export async function pull(
   }
 
   if (!result.ok && CONFLICT_PATTERN.test(result.output)) {
-    await runGit(["merge", "--abort"], folderPath);
+    await runGit("git-merge-abort", ["merge", "--abort"], folderPath);
     return {
       ok: false,
       output:

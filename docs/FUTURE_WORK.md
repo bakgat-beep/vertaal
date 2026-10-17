@@ -5,9 +5,9 @@ A plain list of things that were deliberately left for later, so they are not fo
 ## Security
 
 - **Windows credential vault for saved keys.** `src/crypto.ts` locks API keys and the GitHub token with a passphrase that is built into the app. The proper fix is to keep the key in the Windows Credential Manager, which needs a small Rust-side change that must be tested on Windows.
-- **Narrower app permissions** (`src-tauri/capabilities/default.json`). File access and web access are broad on purpose (game folders can be on any drive; users may point at their own servers). Candidate: limit which `git` commands the app may run. Needs testing on Windows so sync does not break.
-- **Backup and restore hardening.** Restoring a backup or importing data replaces a lot at once; it should be checked more strictly (file looks like a Vertaal database, enough free disk space, a safety copy first) and covered by tests.
-- **Provider-test button cannot be cancelled.** Testing an AI provider's connection has no abort, so a server that never answers leaves the test hanging until it times out.
+- **Narrower app permissions** (`src-tauri/capabilities/default.json`). Done so far: web access (https to any host, plain http only to this computer) and git (one entry per command Vertaal runs; no "any git command"). Still broad on purpose: file access and opening paths (`**`; game folders can be on any drive), and the folder git runs in (the plugin does not check it). Candidate: limit file access to folders the user has picked in a dialog. Needs testing on Windows. Git no longer accepts local-path or `ssh://` remote addresses, only `https://`, `http://` and `git@host:path`.
+- **Backup and restore hardening.** Restore already checks the chosen file (it has the Vertaal tables and passes SQLite's integrity check) and saves a safety backup before anything is replaced. Still missing: a check that there is enough free disk space (the app's permissions cannot read it), and a check that the backup comes from this version of the app or older.
+- **Provider-test request is not cancelled.** The test button already gives up after 20 seconds (90 for a local model) and says so, but the request itself keeps running in the background afterwards, and there is no Cancel button.
 
 ## Translation providers
 
@@ -16,17 +16,13 @@ A plain list of things that were deliberately left for later, so they are not fo
 
 ## Data
 
-- **Merge is not all-or-nothing.** Merging collaborators' files checks every record first, but then writes row by row, because the database connection pool does not allow a safe multi-step transaction. Re-running the merge is always safe.
+- **Merge and import are not all-or-nothing.** Merging collaborators' files checks every record first, but then writes row by row, because the database connection pool does not allow a safe multi-step transaction. An import that fails halfway likewise leaves the rows written so far. Re-running either is always safe.
 - **Projects made before per-project source language** may mix strings from different source languages in one pool; they are not split automatically.
-- **Native-language lists** for Crusader Kings III, Stellaris, Victoria 3 and Hearts of Iron IV should be re-checked against each game's wiki.
-
-- **Importing and merging are not all-or-nothing** (see Merge below): an import that fails halfway leaves the rows written so far. Safe to re-run.
+- **Native-language lists need re-checking when a game adds a language.** All six lists were checked against each game's Steam page on 2026-10-16 and are pinned by `src/games/nativeLanguages.test.ts`, so the test must be updated together with a list. The Paradox wikis' language lists are marked "potentially outdated" and one (Crusader Kings III) lists none, so Steam's supported-language list is the source used. Whether Crusader Kings III really has no Italian or Brazilian Portuguese file slot was not confirmed from the game files themselves.
 - **Folder scan builds paths by hand.** `findLocFiles` (src/import.ts) joins folder and file names itself. Changing it to use the path library could change the `file_path` values already stored, so it needs a migration plan and a Windows test first.
-- **Language-file suffix is case-sensitive.** A file named `..._L_ENGLISH.YML` is not picked up; only `_l_<language>.yml`.
-- **Parse diagnostics.** Lines the importer cannot read are skipped without telling the user which ones.
 - **Speed indexes cost disk space.** Migration 22 (Stage 8) added two indexes: about 47 MB on a 137 MB database, and backups grow with it. A category index was measured and gave no gain, so it was not added.
 
 ## Interface
 
-- **Remaining small UI items.** The ProjectSettings and wizard text-only status messages (e.g. "Saved", "Token saved") still use plain check characters; the Details-panel arrows and the ← → arrows in buttons are still text.
-- **Screen tests.** The wizard, settings and batch-translation screens have tests for their helper functions but not for the screens themselves.
+- **Screen interaction tests.** The wizard, settings and Previous/Next/Stop screens now have first-render tests (`src/screens.test.ts`), but nothing clicks or types in them. That needs a browser-like test library (e.g. jsdom with Testing Library), which is a new dependency and so your call.
+- **Arrows in plain-text messages.** The only text arrow left is inside the "Importing into … → language" progress message (a string, not a button).

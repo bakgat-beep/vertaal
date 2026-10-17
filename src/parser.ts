@@ -3,6 +3,9 @@ export interface ParsedString {
   text: string;
 }
 
+// What one readable line looks like. (Explanation of each part: see parseLocFile.)
+const LINE_PATTERN = /^\s*([A-Za-z0-9_.-]+):\d*\s*"((?:\\.|[^\\])*?)"\s*(#.*)?$/;
+
 export function parseLocFile(content: string): ParsedString[] {
   const results: ParsedString[] = [];
   // Split on Windows (\r\n) and Unix (\n) line endings alike. Splitting on
@@ -20,12 +23,35 @@ export function parseLocFile(content: string): ParsedString[] {
   //   k: "He said \"#bold hi#!\" ok"
   // was cut short at the escaped quote, because what followed it looked like
   // a trailing "# comment", so the translatable text was silently truncated.
-  const linePattern = /^\s*([A-Za-z0-9_.-]+):\d*\s*"((?:\\.|[^\\])*?)"\s*(#.*)?$/;
   for (const line of lines) {
-    const match = line.match(linePattern);
+    const match = line.match(LINE_PATTERN);
     if (match) results.push({ key: match[1], text: match[2] });
   }
   return results;
+}
+
+export interface UnreadableLine {
+  line: number; // 1 = the first line of the file
+  text: string;
+}
+
+// Lines that parseLocFile skips although they are not blank, a comment or the
+// "l_english:" heading — i.e. lines that look like they were meant to be a
+// string but could not be read (a missing closing quote, a key with a space in
+// it, ...). parseLocFile drops them silently, which means a string can go
+// missing from the project without anyone being told. This lets the import say
+// how many there were. It only reports; it changes nothing.
+export function findUnreadableLines(content: string): UnreadableLine[] {
+  const found: UnreadableLine[] = [];
+  const lines = content.replace(/^\uFEFF/, "").split(/\r?\n/);
+  lines.forEach((line, i) => {
+    if (line.trim() === "") return;
+    if (/^\s*#/.test(line)) return; // a comment line
+    if (/^\s*l_[A-Za-z_]+\s*:\s*(#.*)?$/.test(line)) return; // the heading, e.g. "l_english:"
+    if (LINE_PATTERN.test(line)) return;
+    found.push({ line: i + 1, text: line.trim() });
+  });
+  return found;
 }
 
 export interface ProtectedText {

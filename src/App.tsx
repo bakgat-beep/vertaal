@@ -14,6 +14,7 @@ import type { EditorRow, Project } from "./types";
 import { languageDisplayName } from "./languageCodes";
 import { hasUnsavedEdit } from "./unsavedEdit";
 import { Icon } from "./Icon";
+import { Pager, BatchProgress } from "./BatchControls";
 import { GAME_ADAPTERS } from "./games";
 import { protectTokens } from "./parser";
 import { getContributorName, setContributorName } from "./settings";
@@ -209,9 +210,17 @@ function App() {
     await refreshCounts();
     const removedNote = outcome.removedStrings > 0 ? `, ${outcome.removedStrings} no longer in the game files` : "";
     const reappearedNote = outcome.reappearedStrings > 0 ? `, ${outcome.reappearedStrings} reappeared` : "";
+    // Lines that could not be read were skipped, so those strings are NOT in the project.
+    const unreadableNote =
+      outcome.unreadableLines > 0
+        ? ` Warning: ${outcome.unreadableLines} line${outcome.unreadableLines === 1 ? "" : "s"} in those files could not be read and ` +
+          `${outcome.unreadableLines === 1 ? "was" : "were"} skipped, so ${outcome.unreadableLines === 1 ? "that string is" : "those strings are"} ` +
+          `missing here. For example: ${outcome.unreadableExamples.join(" | ")}`
+        : "";
     setStatus(
       `Import complete. ${outcome.filesProcessed} files, ${outcome.stringsProcessed} strings: ` +
-        `${outcome.newStrings} new, ${outcome.changedStrings} changed, ${outcome.unchangedStrings} unchanged${removedNote}${reappearedNote}.`
+        `${outcome.newStrings} new, ${outcome.changedStrings} changed, ${outcome.unchangedStrings} unchanged${removedNote}${reappearedNote}.` +
+        unreadableNote
     );
   }
   
@@ -564,27 +573,17 @@ async function handleVerifyConfirmedInner() {
   // stranded.
   const pager =
     rows.length > 0 || offset > 0 ? (
-      <div className="pager">
-        <button
-          onClick={() =>
-            loadPage(viewMode, Math.max(0, offset - BATCH_SIZE), categoryFilter ?? undefined, subcategoryFilter ?? undefined)
-          }
-          disabled={offset === 0}
-        >
-          ← Previous {BATCH_SIZE}
-        </button>
-        <span className="pager-range">
-          {rows.length > 0 ? `Strings ${offset + 1}–${offset + rows.length}` : "No more strings here"}
-        </span>
-        <button
-          onClick={() =>
-            loadPage(viewMode, offset + BATCH_SIZE, categoryFilter ?? undefined, subcategoryFilter ?? undefined)
-          }
-          disabled={rows.length < BATCH_SIZE}
-        >
-          Next {BATCH_SIZE} →
-        </button>
-      </div>
+      <Pager
+        offset={offset}
+        rowCount={rows.length}
+        pageSize={BATCH_SIZE}
+        onPrevious={() =>
+          loadPage(viewMode, Math.max(0, offset - BATCH_SIZE), categoryFilter ?? undefined, subcategoryFilter ?? undefined)
+        }
+        onNext={() =>
+          loadPage(viewMode, offset + BATCH_SIZE, categoryFilter ?? undefined, subcategoryFilter ?? undefined)
+        }
+      />
     ) : null;
 
   return (
@@ -594,12 +593,13 @@ async function handleVerifyConfirmedInner() {
         <span className="app-name">Vertaal</span>
         <span className="project-context">
           — {adapter()?.displayName ?? currentProject.parent_game_id}
-          {currentProject.project_type === "mod" ? ` — Mod: ${currentProject.source_mod_name ?? "?"}` : ""} →{" "}
+          {currentProject.project_type === "mod" ? ` — Mod: ${currentProject.source_mod_name ?? "?"}` : ""}{" "}
+          <Icon name="arrowRight" size={12} />{" "}
           {currentProject.target_language}
         </span>
         <div className="title-bar-spacer" />
         <button onClick={() => setShowWelcome(true)} title="Back to the list of your projects (your work is saved automatically)">
-          ← Projects
+          <Icon name="arrowLeft" className="icon-before" />Projects
         </button>
         <button
           onClick={openOutputFolder}
@@ -661,23 +661,13 @@ async function handleVerifyConfirmedInner() {
           </button>
         </div>
 
-        {batchRunning && (
-          <>
-            <div className="toolbar-divider" />
-            <span style={{ color: "var(--text-dim)" }}>
-              {batchProgress.done}/{batchProgress.total}
-            </span>
-            <button onClick={stopBatch} title="Stop the batch operation currently running">
-              Stop
-            </button>
-          </>
-        )}
+        <BatchProgress running={batchRunning} done={batchProgress.done} total={batchProgress.total} onStop={stopBatch} />
 
         <div className="toolbar-spacer" />
 
         <div className="more-menu" ref={moreMenuRef}>
           <button onClick={() => setMoreMenuOpen((v) => !v)} title="Less-frequent actions: AI batches, importing game files, sharing, backups, app settings">
-            More actions ▾
+            More actions<Icon name="caretDown" className="icon-after" />
           </button>
           {moreMenuOpen && (
             <div className="more-menu-dropdown">
@@ -1102,7 +1092,7 @@ async function handleVerifyConfirmedInner() {
                 onClick={() => setContextPanelOpen(false)}
                 title="Hide this panel to give the strings more room. A 'Details' tab appears on the right edge to bring it back."
               >
-                Collapse →
+                Collapse<Icon name="arrowRight" className="icon-after" />
               </button>
               {selectedRow ? (
                 <>
@@ -1214,7 +1204,7 @@ async function handleVerifyConfirmedInner() {
             onClick={() => setContextPanelOpen(true)}
             title="Show the details panel again"
           >
-            ◀ Details
+            <Icon name="chevronLeft" className="icon-before" />Details
           </button>
         )}
       </div>

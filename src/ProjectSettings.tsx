@@ -7,6 +7,8 @@ import { getDb } from "./db";
 import { GAME_ADAPTERS } from "./games";
 import { initialModelMemory, modelFor, withModel, modelToSave } from "./providerModel";
 import ProviderTestButton from "./ProviderTestButton";
+import { Icon } from "./Icon";
+import { StatusText } from "./StatusText";
 
 interface Props {
   project: Project;
@@ -119,7 +121,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           <h1 style={{ marginBottom: 0 }}>Project Settings</h1>
           <p style={{ color: "var(--text-dim)" }}>
             {GAME_ADAPTERS[project.parent_game_id]?.displayName ?? project.parent_game_id}
-            {project.project_type === "mod" ? ` — Mod: ${project.source_mod_name ?? "?"}` : ""} → {project.target_language}
+            {project.project_type === "mod" ? ` — Mod: ${project.source_mod_name ?? "?"}` : ""} <Icon name="arrowRight" size={12} /> {project.target_language}
           </p>
         </div>
 
@@ -207,7 +209,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
                   placeholder={hasApiKey ? "Saved (enter a new one to replace)" : "API key"}
                   style={{ flexGrow: 1 }}
                 />
-                {hasApiKey && <span style={{ color: "var(--status-confirmed)", fontSize: "0.8rem" }}>✓ Saved</span>}
+                {hasApiKey && <span style={{ color: "var(--status-confirmed)", fontSize: "0.8rem" }}><Icon name="check" className="icon-before" />Saved</span>}
               </div>
             </div>
             )}
@@ -330,7 +332,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           </>
         )}
 
-        {output && <p style={{ fontSize: "0.85rem" }}>{output}</p>}
+        {output && <p style={{ fontSize: "0.85rem" }}><StatusText text={output} /></p>}
 
         <div className="welcome-footer">
           <button onClick={onClose}>Close</button>

@@ -20,6 +20,7 @@ import {
 import { resolveUsageCounts, type UsageCache } from "./usageCounts";
 import { confirm } from "./confirm";
 import { useEscapeKey } from "./hooks/useEscapeKey";
+import { StatusText } from "./StatusText";
 
 interface Props {
   gameId: string;
@@ -403,7 +404,7 @@ export default function GlossaryManager({
             + Add Term
           </button>
         </div>
-        {listMessage && <p className="glossary-save-message">{listMessage}</p>}
+        {listMessage && <p className="glossary-save-message"><StatusText text={listMessage} /></p>}
 
         {selectedIds.size > 0 && (
           <div className="glossary-bulk-toolbar">
@@ -486,11 +487,11 @@ export default function GlossaryManager({
 
             <div className="glossary-pagination">
               <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={!hasPrev}>
-                ← Prev
+                <Icon name="arrowLeft" className="icon-before" />Prev
               </button>
               <span>Page {totalCount === 0 ? 0 : page + 1}</span>
               <button onClick={() => setPage((p) => p + 1)} disabled={!hasNext}>
-                Next →
+                Next<Icon name="arrowRight" className="icon-after" />
               </button>
             </div>
           </div>
@@ -547,7 +548,7 @@ export default function GlossaryManager({
                       <span style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>Not found in any string.</span>
                     ) : (
                       <button onClick={() => onViewOccurrences(draftEnglish)} style={{ width: "100%" }}>
-                        View {selectedUsage} occurrence{selectedUsage === 1 ? "" : "s"} →
+                        View {selectedUsage} occurrence{selectedUsage === 1 ? "" : "s"}<Icon name="arrowRight" className="icon-after" />
                       </button>
                     )}
                   </div>

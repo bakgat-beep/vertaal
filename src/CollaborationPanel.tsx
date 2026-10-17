@@ -9,6 +9,8 @@ import { importAllContributorFiles, type CombinedMergeSummary } from "./mergeImp
 import { getDb } from "./db";
 import { portableExportFileName } from "./fileNames";
 import { useEscapeKey } from "./hooks/useEscapeKey";
+import { Icon } from "./Icon";
+import { StatusText } from "./StatusText";
 
 interface Props {
   project: Project;
@@ -227,7 +229,7 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
 
         {gitAvailable === null && (
           <p style={{ color: "#e05a5a" }}>
-            ⚠ Git wasn't found on this computer. Install it from{" "}
+            <Icon name="warning" className="icon-before" />Git wasn't found on this computer. Install it from{" "}
             <a href="https://git-scm.com/downloads" target="_blank" rel="noreferrer">
               git-scm.com
             </a>{" "}
@@ -302,7 +304,7 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
             <div className="form-row">
               <div className="form-label">GitHub token</div>
               <div style={{ flexGrow: 1, display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                {hasToken && <span style={{ color: "var(--status-confirmed)", fontSize: "0.8rem" }}>✓ Saved</span>}
+                {hasToken && <span style={{ color: "var(--status-confirmed)", fontSize: "0.8rem" }}><Icon name="check" className="icon-before" />Saved</span>}
                 <input
                   type="password"
                   value={tokenInput}
@@ -350,7 +352,7 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
                   overflowY: "auto",
                 }}
               >
-                {output}
+                <StatusText text={output} />
               </pre>
             )}
           </>

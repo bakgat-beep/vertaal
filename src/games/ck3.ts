@@ -5,12 +5,15 @@ import { modFolderName } from "../fileNames";
 import { escapeDescriptorString } from "../modExport";
 import { renameLangSuffix } from "./langPaths";
 
+// The languages the game itself ships with (checked against the game's Steam
+// page, 2026-10-16; see games/nativeLanguages.test.ts). Italian and Brazilian
+// Portuguese are NOT among them: for Crusader Kings III those exist only as
+// community translations, so they are treated like any other language the game
+// does not have (the export replaces the source language's files).
 const NATIVE_LANGUAGES: Record<string, string> = {
   french: "french",
-  italian: "italian",
   german: "german",
   spanish: "spanish",
-  "brazilian portuguese": "braz_por",
   japanese: "japanese",
   korean: "korean",
   polish: "polish",

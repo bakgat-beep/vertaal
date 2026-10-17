@@ -5,6 +5,7 @@ import {
   restoreTokens,
   validateTokensPreserved,
   escapeForLocExport,
+  findUnreadableLines,
 } from "./parser";
 
 // This is the first test file in the project. These tests characterize
@@ -258,6 +259,7 @@ describe("restoreTokens with $ characters in game codes", () => {
     expect(restoreTokens("x __TOKEN_0__ y __TOKEN_1__ z", ["$&", "$`"])).toBe("x $& y $` z");
   });
 });
+
 describe("parseLocFile - escaped quotes and Windows line endings", () => {
   it("keeps the whole text when an escaped quote is followed by a # code", () => {
     const result = parseLocFile(' k1: "He said \\"#bold hi#!\\" ok"');
@@ -280,5 +282,31 @@ describe("parseLocFile - escaped quotes and Windows line endings", () => {
       { key: "k1", text: "Text" },
       { key: "k2", text: "Other" },
     ]);
+  });
+});
+
+
+describe("findUnreadableLines", () => {
+  it("finds nothing in a normal file (heading, comments, blank lines, entries with a trailing comment)", () => {
+    const file = `\uFEFFl_english:\r\n # a comment\r\n\r\n  a:0 "One"\r\n b: "Two" # why\r\n  c-d.e:3 "Th\\"ree"\r\n`;
+    expect(findUnreadableLines(file)).toEqual([]);
+    expect(parseLocFile(file).map((r) => r.key)).toEqual(["a", "b", "c-d.e"]);
+  });
+
+  it("reports a line with no closing quote, with its line number", () => {
+    const result = findUnreadableLines(`l_english:\n good:0 "Fine"\n broken:0 "never closed\n`);
+    expect(result).toEqual([{ line: 3, text: 'broken:0 "never closed' }]);
+  });
+
+  it("reports a key that cannot be read (a space in it) and text with no quotes", () => {
+    const result = findUnreadableLines(`l_english:\n bad key:0 "x"\n nokey_text: hello\n`);
+    expect(result.map((r) => r.line)).toEqual([2, 3]);
+  });
+
+  it("every line it reports is one parseLocFile skips, and no line is both read and reported", () => {
+    const file = `l_english:\n a:0 "ok"\n b:0 "oops\n c:0 "ok too"\n`;
+    const readKeys = parseLocFile(file).map((r) => r.key);
+    expect(readKeys).toEqual(["a", "c"]);
+    expect(findUnreadableLines(file).map((r) => r.text)).toEqual(['b:0 "oops']);
   });
 });

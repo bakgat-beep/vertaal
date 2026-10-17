@@ -5,7 +5,7 @@
 // amber message is amber, with no extra styling.
 import type { CSSProperties, ReactElement } from "react";
 
-export type IconName = "warning" | "flag" | "check" | "cross" | "pencil" | "ban" | "chevron" | "dot";
+export type IconName = "warning" | "flag" | "check" | "cross" | "pencil" | "ban" | "chevron" | "chevronLeft" | "caretDown" | "arrowLeft" | "arrowRight" | "dot";
 
 const PATHS: Record<IconName, ReactElement> = {
   warning: (
@@ -36,6 +36,10 @@ const PATHS: Record<IconName, ReactElement> = {
     </>
   ),
   chevron: <path d="m6 3.5 4.5 4.5L6 12.5" />,
+  chevronLeft: <path d="m10 3.5-4.5 4.5 4.5 4.5" />,
+  caretDown: <path d="m3.5 6 4.5 4.5L12.5 6" />,
+  arrowLeft: <path d="M13.5 8h-11M7 3.5 2.5 8 7 12.5" />,
+  arrowRight: <path d="M2.5 8h11M9 3.5 13.5 8 9 12.5" />,
   dot: <circle cx="8" cy="8" r="3" fill="currentColor" stroke="none" />,
 };
 

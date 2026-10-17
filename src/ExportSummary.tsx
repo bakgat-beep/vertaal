@@ -152,7 +152,7 @@ export default function ExportSummary({
             <div className="welcome-footer">
               <button onClick={onClose}>Cancel</button>
               <button className="build-mod-button" onClick={handleProceed} disabled={preflight.confirmed === 0}>
-                Proceed →
+                Proceed<Icon name="arrowRight" className="icon-after" />
               </button>
             </div>
           </>

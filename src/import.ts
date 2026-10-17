@@ -2,9 +2,24 @@ import { readDir, readTextFile } from "@tauri-apps/plugin-fs";
 import { open } from "@tauri-apps/plugin-dialog";
 import { join } from "@tauri-apps/api/path";
 import { getDb } from "./db";
-import { parseLocFile } from "./parser";
+import { parseLocFile, findUnreadableLines } from "./parser";
 import type { Project } from "./types";
 import type { GameAdapter } from "./games/types";
+
+// Whether a file name is a localization file in the given language, e.g.
+// "ui_l_english.yml". Capitals are ignored ("UI_L_ENGLISH.YML" counts too): the
+// game's own files are lower-case, but some mods are not, and Windows does not
+// tell them apart anyway. Exporting already ignored capitals (see
+// renameLangSuffix in games/langPaths.ts); this makes importing agree.
+export function isLocFileName(name: string, language: string): boolean {
+  return name.toLowerCase().endsWith(`_l_${language.toLowerCase()}.yml`);
+}
+
+// "ui_l_english.yml" -> "ui" (capitals in the suffix are ignored, as above).
+export function stripLocSuffix(name: string, language: string): string {
+  const escaped = language.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return name.replace(new RegExp(`_l_${escaped}\\.yml$`, "i"), "");
+}
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -18,7 +33,7 @@ export async function findLocFiles(dirPath: string, sourceLanguage: string): Pro
     const fullPath = await join(dirPath, entry.name ?? "");
     if (entry.isDirectory) {
       found = found.concat(await findLocFiles(fullPath, sourceLanguage));
-    } else if (entry.name?.endsWith(`_l_${sourceLanguage}.yml`)) {
+    } else if (entry.name && isLocFileName(entry.name, sourceLanguage)) {
       found.push(fullPath);
     }
   }
@@ -83,6 +98,11 @@ export type ImportOutcome =
       // A string previously marked removed that has reappeared (a patch
       // added it back, or the earlier import was of a narrower folder).
       reappearedStrings: number;
+      // Lines in the scanned files that were not blank, a comment or the
+      // heading but could not be read, so they were skipped (see
+      // findUnreadableLines in parser.ts). A few examples, as "file, line N: text".
+      unreadableLines: number;
+      unreadableExamples: string[];
     }
   | { status: "cancelled" }
   | { status: "no-files-found" }
@@ -173,13 +193,22 @@ export async function importProjectFolder(
     let changedStrings = 0;
     let unchangedStrings = 0;
     let reappearedStrings = 0;
+    let unreadableLines = 0;
+    const unreadableExamples: string[] = [];
 
     for (const filePath of files) {
       onStatus(`Reading ${filePath}...`);
       const content = await readTextFile(filePath);
       const parsed = parseLocFile(content);
       const fileName = filePath.split("\\").pop() ?? filePath;
-      const contextLabel = fileName.replace(`_l_${currentProject.source_language}.yml`, "").replace(/_/g, " ");
+      for (const bad of findUnreadableLines(content)) {
+        unreadableLines++;
+        if (unreadableExamples.length < 5) {
+          const shown = bad.text.length > 80 ? `${bad.text.slice(0, 80)}...` : bad.text;
+          unreadableExamples.push(`${fileName}, line ${bad.line}: ${shown}`);
+        }
+      }
+      const contextLabel = stripLocSuffix(fileName, currentProject.source_language).replace(/_/g, " ");
       const category = isMod ? extractModCategory(filePath) : gm.extractCategory(filePath);
       const subcategory = isMod ? extractModSubcategory(filePath) : gm.extractSubcategory(filePath);
       for (const item of parsed) {
@@ -236,6 +265,8 @@ export async function importProjectFolder(
       unchangedStrings,
       removedStrings,
       reappearedStrings,
+      unreadableLines,
+      unreadableExamples,
     };
   } catch (err) {
     return { status: "error", error: String(err) };

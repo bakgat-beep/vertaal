@@ -9,6 +9,7 @@ import { backupDatabase, restoreDatabase } from "./backup";
 import { importPortableProjectData } from "./mergeImport";
 import NewProjectWizard from "./NewProjectWizard";
 import logoFull from "./assets/logo-full-white.png";
+import { Icon } from "./Icon";
 
 interface Props {
   onProjectSelected: (project: Project) => void;
@@ -292,7 +293,7 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
         {loaded && view === "new-project" && (
           <>
             <button className="text-link-button welcome-back-link" onClick={() => setView("hub")}>
-              ← Back to Projects
+              <Icon name="arrowLeft" className="icon-before" />Back to Projects
             </button>
             <h2 className="welcome-heading">Create a project</h2>
             <NewProjectWizard onProjectSelected={onProjectSelected} />
@@ -302,7 +303,7 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
         {loaded && view === "import-project" && (
           <>
             <button className="text-link-button welcome-back-link" onClick={() => setView("hub")}>
-              ← Back to Projects
+              <Icon name="arrowLeft" className="icon-before" />Back to Projects
             </button>
             <h2 className="welcome-heading compact">Merge into which project?</h2>
             <p className="import-hint">

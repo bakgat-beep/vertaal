@@ -20,7 +20,7 @@
     "fs:allow-copy-file",
     "fs:allow-remove",
     "fs:allow-mkdir",
-    
+
     {
         "identifier": "fs:scope",
         "allow": [{ "path": "**" }]
@@ -33,9 +33,152 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "run-git",
+          "name": "git-version",
           "cmd": "git",
-          "args": true
+          "args": [
+            "--version"
+          ]
+        },
+        {
+          "name": "git-init",
+          "cmd": "git",
+          "args": [
+            "init"
+          ]
+        },
+        {
+          "name": "git-clone",
+          "cmd": "git",
+          "args": [
+            "clone",
+            {"validator": "(?:https?://[^\\s@]+|git@[A-Za-z0-9.-]+:\\S+)"},
+            "."
+          ]
+        },
+        {
+          "name": "git-remote-list",
+          "cmd": "git",
+          "args": [
+            "remote"
+          ]
+        },
+        {
+          "name": "git-remote-set-url",
+          "cmd": "git",
+          "args": [
+            "remote",
+            "set-url",
+            "origin",
+            {"validator": "(?:https?://[^\\s@]+|git@[A-Za-z0-9.-]+:\\S+)"}
+          ]
+        },
+        {
+          "name": "git-remote-add",
+          "cmd": "git",
+          "args": [
+            "remote",
+            "add",
+            "origin",
+            {"validator": "(?:https?://[^\\s@]+|git@[A-Za-z0-9.-]+:\\S+)"}
+          ]
+        },
+        {
+          "name": "git-add",
+          "cmd": "git",
+          "args": [
+            "add",
+            "--",
+            {"validator": "[^/\\\\]+-vertaal-export\\.json"}
+          ]
+        },
+        {
+          "name": "git-commit",
+          "cmd": "git",
+          "args": [
+            "-c",
+            {"validator": "user\\.name=[\\s\\S]*"},
+            "-c",
+            {"validator": "user\\.email=[a-z0-9-]+@users\\.noreply\\.vertaal\\.local"},
+            "commit",
+            "-m",
+            {"validator": "[\\s\\S]*"},
+            "--",
+            {"validator": "[^/\\\\]+-vertaal-export\\.json"}
+          ]
+        },
+        {
+          "name": "git-status",
+          "cmd": "git",
+          "args": [
+            "status",
+            "--porcelain",
+            "-z",
+            "-uall"
+          ]
+        },
+        {
+          "name": "git-push",
+          "cmd": "git",
+          "args": [
+            "push",
+            "origin",
+            "HEAD"
+          ]
+        },
+        {
+          "name": "git-push-token",
+          "cmd": "git",
+          "args": [
+            "-c",
+            "credential.helper=",
+            "-c",
+            "credential.helper=!f() { echo username=x-access-token; echo \"password=$VERTAAL_GIT_TOKEN\"; }; f",
+            "push",
+            {"validator": "https://github\\.com(?::443)?/[^\\s@]+"},
+            "HEAD"
+          ]
+        },
+        {
+          "name": "git-pull",
+          "cmd": "git",
+          "args": [
+            "-c",
+            {"validator": "user\\.name=[\\s\\S]*"},
+            "-c",
+            {"validator": "user\\.email=[a-z0-9-]+@users\\.noreply\\.vertaal\\.local"},
+            "pull",
+            "--no-rebase",
+            "--allow-unrelated-histories",
+            "origin",
+            "HEAD"
+          ]
+        },
+        {
+          "name": "git-pull-token",
+          "cmd": "git",
+          "args": [
+            "-c",
+            "credential.helper=",
+            "-c",
+            "credential.helper=!f() { echo username=x-access-token; echo \"password=$VERTAAL_GIT_TOKEN\"; }; f",
+            "-c",
+            {"validator": "user\\.name=[\\s\\S]*"},
+            "-c",
+            {"validator": "user\\.email=[a-z0-9-]+@users\\.noreply\\.vertaal\\.local"},
+            "pull",
+            "--no-rebase",
+            "--allow-unrelated-histories",
+            {"validator": "https://github\\.com(?::443)?/[^\\s@]+"},
+            "HEAD"
+          ]
+        },
+        {
+          "name": "git-merge-abort",
+          "cmd": "git",
+          "args": [
+            "merge",
+            "--abort"
+          ]
         }
       ]
     },

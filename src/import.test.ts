@@ -49,7 +49,7 @@ vi.mock("./db", () => ({
   }),
 }));
 
-import { importProjectFolder } from "./import";
+import { importProjectFolder, findLocFiles, isLocFileName, stripLocSuffix } from "./import";
 
 const gm = {
   displayName: "Test Game",
@@ -181,5 +181,62 @@ describe("importProjectFolder reports a folder it cannot read instead of throwin
     const outcome = await importProjectFolder(project, gm, () => {});
     expect(outcome.status).toBe("error");
     if (outcome.status === "error") expect(outcome.error).toMatch(/dialog crashed/);
+  });
+});
+
+
+describe("importProjectFolder tells you about lines it could not read", () => {
+  it("counts unreadable lines and gives examples with file name and line number, while still importing the rest", async () => {
+    setupFolder({
+      "a_l_english.yml": `l_english:\n good:0 "Fine"\n broken:0 "never closed\n also_good: "Yes"\n`,
+      "b_l_english.yml": `l_english:\n bad key:0 "x"\n`,
+    });
+    const outcome = await importProjectFolder(project, gm, () => {});
+    expect(outcome).toMatchObject({ status: "ok", newStrings: 2, unreadableLines: 2 });
+    if (outcome.status === "ok") {
+      expect(outcome.unreadableExamples).toEqual([
+        'a_l_english.yml, line 3: broken:0 "never closed',
+        'b_l_english.yml, line 2: bad key:0 "x"',
+      ]);
+    }
+  });
+
+  it("reports none for a clean file, and keeps at most five examples however many there are", async () => {
+    setupFolder({ "a_l_english.yml": `l_english:\n good:0 "Fine"\n` });
+    expect(await importProjectFolder(project, gm, () => {})).toMatchObject({ unreadableLines: 0, unreadableExamples: [] });
+
+    setupFolder({ "a_l_english.yml": "l_english:\n" + Array.from({ length: 9 }, (_, i) => ` bad${i}:0 "open`).join("\n") + "\n" });
+    const outcome = await importProjectFolder(project, gm, () => {});
+    expect(outcome).toMatchObject({ unreadableLines: 9 });
+    if (outcome.status === "ok") expect(outcome.unreadableExamples).toHaveLength(5);
+  });
+
+  it("shortens a very long unreadable line in the example", async () => {
+    setupFolder({ "a_l_english.yml": `l_english:\n k:0 "${"x".repeat(300)}\n` });
+    const outcome = await importProjectFolder(project, gm, () => {});
+    if (outcome.status !== "ok") throw new Error("expected ok");
+    expect(outcome.unreadableExamples[0].length).toBeLessThan(120);
+    expect(outcome.unreadableExamples[0]).toMatch(/\.\.\.$/);
+  });
+});
+
+describe("file names are matched ignoring capitals", () => {
+  it("isLocFileName and stripLocSuffix", () => {
+    expect(isLocFileName("ui_l_english.yml", "english")).toBe(true);
+    expect(isLocFileName("UI_L_ENGLISH.YML", "english")).toBe(true);
+    expect(isLocFileName("Ui_l_English.yml", "english")).toBe(true);
+    expect(isLocFileName("ui_l_german.yml", "english")).toBe(false);
+    expect(isLocFileName("ui_l_english.yml.bak", "english")).toBe(false);
+    expect(isLocFileName("ui_english.yml", "english")).toBe(false);
+    expect(stripLocSuffix("UI_L_ENGLISH.YML", "english")).toBe("UI");
+    expect(stripLocSuffix("ui_l_english.yml", "english")).toBe("ui");
+  });
+
+  it("the folder scan finds a mod's upper-case file name, and importing it labels it properly", async () => {
+    setupFolder({ "My_Mod_L_ENGLISH.YML": `l_english:\n k:0 "Hi"\n`, "other_l_german.yml": `l_german:\n k2:0 "Hallo"\n` });
+    expect(await findLocFiles("C:\\install", "english")).toEqual(["C:\\install\\My_Mod_L_ENGLISH.YML"]);
+    const outcome = await importProjectFolder(project, gm, () => {});
+    expect(outcome).toMatchObject({ status: "ok", filesProcessed: 1, newStrings: 1 });
+    expect(strings.find((s) => s.key === "k").context_label).toBe("My Mod");
   });
 });

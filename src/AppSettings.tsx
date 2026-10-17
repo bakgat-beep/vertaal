@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { setContributorName } from "./settings";
 import { useEscapeKey } from "./hooks/useEscapeKey";
+import { StatusText } from "./StatusText";
 
 interface Props {
   contributorName: string;
@@ -50,7 +51,7 @@ export default function AppSettings({ contributorName, onSaved, onClose }: Props
           and in files you share with collaborators. Changing it only affects work from now on; nothing already
           recorded is rewritten.
         </p>
-        {message && <p style={{ fontSize: "0.85rem" }}>{message}</p>}
+        {message && <p style={{ fontSize: "0.85rem" }}><StatusText text={message} /></p>}
 
         <h3 style={{ marginBottom: 0, marginTop: "1.25rem" }}>Where to find other settings</h3>
         <ul style={{ fontSize: "0.85rem", color: "var(--text-dim)", paddingLeft: "1.2rem" }}>

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { TRANSLATION_PROVIDERS } from "./providers";
 import { testProviderConnection, type ProviderTestResult } from "./providerTest";
 import type { ProviderConfig } from "./providers/types";
+import { Icon } from "./Icon";
 
 interface Props {
   providerId: string;
@@ -76,7 +77,7 @@ export default function ProviderTestButton({
             color: result.ok ? "var(--status-confirmed)" : "#e05a5a",
           }}
         >
-          {result.ok ? "✓ " : "✗ "}
+          <Icon name={result.ok ? "check" : "cross"} className="icon-before" />
           {result.message}
           {result.detail && (
             <span style={{ display: "block", fontSize: "0.75rem", color: "var(--text-dim)" }}>
