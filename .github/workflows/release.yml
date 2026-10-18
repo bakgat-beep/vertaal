@@ -3,8 +3,10 @@ name: Release
 # Builds a Windows installer and attaches it to a GitHub Release.
 #
 # To ship a new version:
-#   1. Bump the version number in src-tauri/tauri.conf.json (and package.json,
-#      just to keep them in sync — Tauri only reads tauri.conf.json's version).
+#   1. Bump the version number in package.json and src-tauri/Cargo.toml.
+#      Tauri names the installer after package.json's version (tauri.conf.json
+#      points at it); a test checks Cargo.toml matches, and this workflow
+#      stops if the tag and package.json differ.
 #   2. Commit that change.
 #   3. Create and push a tag starting with "v", e.g.:
 #        git tag v0.2.0
@@ -38,6 +40,20 @@ jobs:
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
+
+      # The installer's file name comes from the version in package.json
+      # (tauri.conf.json points at it), not from the tag. Stop here, with a clear
+      # message, if someone tagged a release without bumping that number first.
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          app=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$app" ]; then
+            echo "::error::Tag is v$tag but package.json says version $app. Bump the version (package.json and src-tauri/Cargo.toml), commit, then re-create the tag."
+            exit 1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

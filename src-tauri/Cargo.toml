@@ -1,6 +1,6 @@
 [package]
 name = "pdx-afrikaans"
-version = "0.1.0"
+version = "0.2.1"
 description = "Vertaal: a translation tool for Paradox grand strategy game mods"
 authors = ["Vertaal contributors"]
 edition = "2021"
