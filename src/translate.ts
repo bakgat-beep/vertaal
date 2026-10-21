@@ -7,6 +7,7 @@ import { getProviderCredentials } from "./providers/credentials.ts";
 import { GAME_ADAPTERS } from "./games";
 import { isPermanentError } from "./providers/errors";
 import { restoreOuterSpacing, describeChattyReply } from "./replyCheck";
+import { effectiveDelayMs } from "./delaySettings";
 
 // How long to wait for one reply when the provider does not say otherwise.
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -50,8 +51,22 @@ async function runCancellable<T>(
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// Waits for ms milliseconds, but gives up the moment the signal fires (the
+// Stop button). Resolves true if the whole wait was served, false if it was
+// cut short by Stop — so a long pause can never keep a stopped batch waiting.
+function sleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(false);
+    const onStop = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onStop);
+      resolve(true);
+    }, ms);
+    signal?.addEventListener("abort", onStop, { once: true });
+  });
 }
 
 // Marks a string as "needs a human look" after an AI attempt failed — WITHOUT
@@ -130,7 +145,9 @@ export async function translateAndSave(
     const credentials = await getProviderCredentials(provider.id);
 
     if (provider.id === "google-translate" && applyGoogleTranslateDelay) {
-      await sleep(currentProject.google_translate_delay_ms ?? 500);
+      // Stop ends this wait at once; the request after it is then never sent.
+      const waited = await sleep(effectiveDelayMs(currentProject.google_translate_delay_ms, 500), signal);
+      if (!waited) return { ok: false, error: "Stopped by user.", stopped: true };
     }
 
     let rawTranslation: string;
@@ -277,7 +294,7 @@ export async function translateWithRetry(
   skipHumanWork: boolean = false,
   signal?: AbortSignal
 ): Promise<{ ok: boolean; error?: string; attempts: number; skipped?: boolean; permanent?: boolean; stopped?: boolean }> {
-  const delay = retryDelayMs ?? currentProject?.retry_delay_ms ?? 2000;
+  const delay = effectiveDelayMs(retryDelayMs ?? currentProject?.retry_delay_ms, 2000);
   let lastResult: { ok: boolean; error?: string; skipped?: boolean; permanent?: boolean; stopped?: boolean } = {
     ok: false,
     error: "No attempts made.",
@@ -302,7 +319,10 @@ export async function translateWithRetry(
       return { ok: false, error: lastResult.error ?? "unknown error", attempts: attempt, permanent: true };
     }
     if (attempt < maxAttempts) {
-      await sleep(delay);
+      // Stop ends the wait between attempts at once, and nothing is flagged:
+      // the string was not at fault, the person just stopped the run.
+      const waited = await sleep(delay, signal);
+      if (!waited) return { ok: false, error: "Stopped by user.", attempts: attempt, stopped: true };
     }
   }
 

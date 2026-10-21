@@ -18,6 +18,11 @@ async function start() {
         text: `Vertaal could not finish restoring your backup: ${restore.message}\n\nYour current data was left as it was. Vertaal will try again the next time it starts.`,
         kind: "error",
       };
+    } else if (restore.status === "rejected") {
+      restoreNote = {
+        text: `The backup that was waiting to be restored was not used. ${restore.message}`,
+        kind: "error",
+      };
     }
   } catch {
     // If even checking fails, carry on and open the app normally.

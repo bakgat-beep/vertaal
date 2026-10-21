@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
+import type { DatabaseFacts } from "./backupValidation";
 
 // An in-memory stand-in for the file system and the database, so these tests
 // check exactly WHICH files get made/replaced/removed and in WHAT order.
@@ -7,6 +8,9 @@ const h = vi.hoisted(() => ({
   calls: [] as string[],
   scrubFails: false,
   copyFailsTo: null as string | null,
+  // What a file holding plain text like "VALID-BACKUP" looks like when opened:
+  // a genuine Vertaal database of the current version (set in beforeAll).
+  genuineLatest: null as unknown as DatabaseFacts,
 }));
 
 vi.mock("@tauri-apps/plugin-fs", () => ({
@@ -44,9 +48,13 @@ vi.mock("@tauri-apps/plugin-sql", () => ({
         select: async (q: string) => {
           const content = h.files.get(path);
           if (content === "GARBAGE") throw new Error("file is not a database");
-          if (q.includes("sqlite_master")) return ["projects", "strings", "translations"].map((name) => ({ name }));
-          if (q.includes("integrity_check")) return [{ integrity_check: content === "DAMAGED" ? "row 3 missing" : "ok" }];
-          return [];
+          const { answerQuery, FAKE_DB_PREFIX } = await import("./backupFixtures");
+          // A file made with fakeDbFile(...) holds its own facts; any other text
+          // (like "VALID-BACKUP") is a genuine Vertaal database of the current version.
+          const facts = content?.startsWith(FAKE_DB_PREFIX)
+            ? (JSON.parse(content.slice(FAKE_DB_PREFIX.length)) as DatabaseFacts)
+            : h.genuineLatest;
+          return answerQuery(facts, q, content === "DAMAGED" ? "row 3 missing" : "ok");
         },
         close: async () => {
           h.calls.push("scratch:close");
@@ -67,6 +75,11 @@ vi.mock("./db", () => ({
 }));
 
 import { backupDatabase, restoreDatabase, applyPendingRestore } from "./backup";
+import { LATEST_VERSION, UNRELATED_FACTS, fakeDbFile, genuineFacts } from "./backupFixtures";
+
+beforeAll(async () => {
+  h.genuineLatest = await genuineFacts(LATEST_VERSION);
+});
 
 beforeEach(() => {
   h.files.clear();
@@ -140,6 +153,46 @@ describe("restoreDatabase", () => {
     expect(h.files.get("/docs/good.db")).toBe("VALID-BACKUP"); // the user's own file is untouched
   });
 
+  // The review's P1 case: a healthy SQLite file with Vertaal's three table
+  // names but none of Vertaal's real structure used to pass the check.
+  it("rejects a healthy but unrelated database that has tables named projects, strings and translations — and changes nothing", async () => {
+    h.files.set("/docs/unrelated.db", fakeDbFile(UNRELATED_FACTS));
+    await expect(restoreDatabase("/docs/unrelated.db")).rejects.toThrow("not a valid Vertaal backup");
+    expect(h.files.has("/cfg/vertaal-restore-pending.db")).toBe(false);
+    expect([...h.files.keys()].some((k) => k.startsWith("/data/backups/"))).toBe(false);
+    expect(h.files.get("/cfg/vertaal.db")).toBe("MY-CURRENT-DATA");
+    expect(h.files.has("/cfg/vertaal-backup-work.db")).toBe(false);
+    expect(h.calls.some((c) => c.startsWith("live:"))).toBe(false); // the live database was never even touched
+  });
+
+  it("rejects a Vertaal database that has lost a column the app needs, naming it, and changes nothing", async () => {
+    const facts = JSON.parse(JSON.stringify(h.genuineLatest)) as DatabaseFacts;
+    facts.tables["projects"] = facts.tables["projects"].filter((c) => c !== "install_path");
+    h.files.set("/docs/missing-column.db", fakeDbFile(facts));
+    await expect(restoreDatabase("/docs/missing-column.db")).rejects.toThrow('"install_path" column of the "projects" table');
+    expect(h.files.has("/cfg/vertaal-restore-pending.db")).toBe(false);
+    expect(h.files.get("/cfg/vertaal.db")).toBe("MY-CURRENT-DATA");
+  });
+
+  it("rejects a backup made by a NEWER Vertaal (it would stop this version from starting), and changes nothing", async () => {
+    const facts = JSON.parse(JSON.stringify(h.genuineLatest)) as DatabaseFacts;
+    facts.migrations!.push({ version: LATEST_VERSION + 1, checksum: "AB12" });
+    h.files.set("/docs/newer.db", fakeDbFile(facts));
+    await expect(restoreDatabase("/docs/newer.db")).rejects.toThrow("newer version of Vertaal");
+    expect(h.files.has("/cfg/vertaal-restore-pending.db")).toBe(false);
+    expect(h.files.get("/cfg/vertaal.db")).toBe("MY-CURRENT-DATA");
+  });
+
+  // Older backups must keep working: the app brings them up to date when it starts.
+  it.each([1, 5, 6, 13, 21, LATEST_VERSION])("accepts a genuine backup made by Vertaal at database version %i", async (version) => {
+    const file = fakeDbFile(await genuineFacts(version));
+    h.files.set("/docs/older.db", file);
+    const safety = await restoreDatabase("/docs/older.db");
+    expect(h.files.get("/cfg/vertaal-restore-pending.db")).toBe(file);
+    expect(h.files.has(safety)).toBe(true);
+    expect(h.files.get("/cfg/vertaal.db")).toBe("MY-CURRENT-DATA");
+  });
+
   it("without a safety backup there is no restore", async () => {
     h.files.set("/docs/good.db", "VALID-BACKUP");
     h.scrubFails = true;
@@ -174,5 +227,26 @@ describe("applyPendingRestore (runs at startup, before the database is opened)",
     expect(h.files.has("/cfg/vertaal-restore-pending.db")).toBe(true);
     expect(h.files.get("/cfg/vertaal.db")).toBe("MY-CURRENT-DATA");
     expect(h.files.has("/cfg/vertaal.db-wal")).toBe(true); // recent writes are not thrown away
+  });
+
+  it("checks the waiting file again, and if it fails the check discards it and leaves the current database alone", async () => {
+    h.files.set("/cfg/vertaal-restore-pending.db", fakeDbFile(UNRELATED_FACTS));
+    h.files.set("/cfg/vertaal.db-wal", "recent-writes");
+    const result = await applyPendingRestore();
+    expect(result.status).toBe("rejected");
+    expect(result.status === "rejected" && result.message).toContain("not a valid Vertaal backup");
+    expect(h.files.has("/cfg/vertaal-restore-pending.db")).toBe(false); // would otherwise fail again on every launch
+    expect(h.files.get("/cfg/vertaal.db")).toBe("MY-CURRENT-DATA");
+    expect(h.files.has("/cfg/vertaal.db-wal")).toBe(true);
+    expect(h.files.has("/cfg/vertaal-backup-work.db")).toBe(false);
+  });
+
+  it("if the waiting file cannot be checked right now (not the same as failing the check), keeps it for the next launch", async () => {
+    h.files.set("/cfg/vertaal-restore-pending.db", "VALID-BACKUP");
+    h.copyFailsTo = "/cfg/vertaal-backup-work.db";
+    const result = await applyPendingRestore();
+    expect(result.status).toBe("failed");
+    expect(h.files.has("/cfg/vertaal-restore-pending.db")).toBe(true);
+    expect(h.files.get("/cfg/vertaal.db")).toBe("MY-CURRENT-DATA");
   });
 });

@@ -57,7 +57,7 @@ src/
   searchPattern.ts    — builds the database search patterns used by the editor and glossary search (see "Search")
   history.ts          — per-string translation history
   import.ts, export.ts, exportCheck.ts, exportManifest.ts — localization file scanning and export
-  backup.ts, portableExport.ts, mergeImport.ts, git.ts — backup/sync features
+  backup.ts, backupValidation.ts, portableExport.ts, mergeImport.ts, git.ts — backup/sync features (backupValidation.ts decides whether a file is a genuine Vertaal backup this version can open)
   modDescriptor.ts, modExport.ts, steamDetect.ts        — mod-translation support
   games/              — one file per supported game (see "Adding a new game")
   providers/          — one file per AI/translation provider, plus credentials (see "Adding a new translation provider")
@@ -127,6 +127,8 @@ The editor and glossary search boxes treat what you type literally: `%`, `_`, `*
 ## Database migrations
 
 New schema changes go in `src-tauri/migrations/` as a new numbered file (`00XX_description.sql`, following on from the highest existing number), and must be registered in `src-tauri/src/lib.rs`'s migration list with a matching version number. Existing installs upgrade automatically — never edit an already-shipped migration file, only add new ones.
+
+Restoring a backup refuses any database that does not match the migration files (see `src/backupValidation.ts`). That check reads the `.sql` files themselves, so a new migration needs nothing extra to be recognised — but if it creates a table, column, index or trigger, also add it to the expected-structure list at the top of `src/backupValidation.ts` (with the migration number it arrives in); `npm test` fails and names anything missing. For the same reason, never edit a migration file after it has shipped, not even its whitespace or line endings: a backup made before the edit would be refused (and Vertaal itself would refuse to start on that database).
 
 ## Conventions
 

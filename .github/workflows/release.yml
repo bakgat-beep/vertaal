@@ -11,13 +11,17 @@ name: Release
 #   3. Create and push a tag starting with "v", e.g.:
 #        git tag v0.2.0
 #        git push origin v0.2.0
-#   4. This workflow runs automatically, builds the installer, and publishes
-#      a draft GitHub Release with it attached. Open the Releases page on
-#      GitHub, check the draft looks right, and click "Publish release".
+#   4. This workflow runs automatically. It FIRST runs the same checks as
+#      check.yml (type-check, tests, security audit) on the tagged commit; only
+#      if they all pass does it build the installer and publish a draft GitHub
+#      Release with it attached. If a check fails, nothing is built or published:
+#      fix the problem, commit, delete the tag and create it again on the new
+#      commit. Open the Releases page on GitHub, check the draft looks right,
+#      and click "Publish release".
 #
 # You can also run this manually from the "Actions" tab on GitHub (the
-# "workflow_dispatch" trigger below) to test that a build succeeds without
-# actually publishing a release — useful before cutting a real tag.
+# "workflow_dispatch" trigger below) to test that checks and build succeed
+# without actually publishing a release — useful before cutting a real tag.
 
 on:
   push:
@@ -26,7 +30,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The same checks that run on every push and pull request (check.yml), run
+  # here on the exact commit being released. "build" below waits for this.
+  check:
+    uses: ./.github/workflows/check.yml
+    permissions:
+      contents: read
+
   build:
+    # Nothing is built, and no release is created, unless every check passed.
+    needs: check
+
     # Vertaal is a Windows-only app (it writes Paradox game/mod files using
     # Windows-style paths), so this only builds a Windows installer.
     runs-on: windows-latest
@@ -63,8 +77,12 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # "npm ci" installs exactly what package-lock.json says (and fails if
+      # package.json and the lock file disagree), so the installer is built from
+      # the same packages that were tested — unlike "npm install", which may
+      # quietly pick newer versions.
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build and (on a tag push) publish the release
         uses: tauri-apps/tauri-action@v0

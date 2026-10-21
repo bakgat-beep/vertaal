@@ -7,6 +7,7 @@ import { getDb } from "./db";
 import { GAME_ADAPTERS } from "./games";
 import { initialModelMemory, modelFor, withModel, modelToSave } from "./providerModel";
 import ProviderTestButton from "./ProviderTestButton";
+import { parseDelayMs, MAX_DELAY_MS } from "./delaySettings";
 import { Icon } from "./Icon";
 import { StatusText } from "./StatusText";
 
@@ -60,16 +61,18 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
   const isManual = providerId === NO_AI_PROVIDER_ID;
 
   async function handleSave() {
-    const parsedRetryDelay = parseInt(retryDelayMs, 10);
-    const parsedGoogleDelay = parseInt(googleDelayMs, 10);
-    if (!Number.isFinite(parsedRetryDelay) || parsedRetryDelay < 0) {
-      setOutput("Retry delay must be a number of milliseconds (0 or more).");
+    const retryCheck = parseDelayMs(retryDelayMs, "Retry delay");
+    if (!retryCheck.ok) {
+      setOutput(retryCheck.message);
       return;
     }
-    if (!Number.isFinite(parsedGoogleDelay) || parsedGoogleDelay < 0) {
-      setOutput("Google Translate delay must be a number of milliseconds (0 or more).");
+    const googleCheck = parseDelayMs(googleDelayMs, "Google Translate delay");
+    if (!googleCheck.ok) {
+      setOutput(googleCheck.message);
       return;
     }
+    const parsedRetryDelay = retryCheck.value;
+    const parsedGoogleDelay = googleCheck.value;
 
     const modelToStore = modelToSave(providerId, modelMemory, NO_AI_PROVIDER_ID);
     const trimmedSourceOverride = sourceLangOverride.trim() || null;
@@ -270,7 +273,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           <>
         <h3 style={{ marginBottom: 0, marginTop: "1.2rem", paddingBottom: "0.25rem", borderBottom: "1px solid var(--border)" }}>Advanced</h3>
         <div className="form-row">
-          <div className="form-label" title="Milliseconds to wait before trying a failed string again during a batch run (1000 ms = 1 second).">Retry delay (ms)</div>
+          <div className="form-label" title={`Milliseconds to wait before trying a failed string again during a batch run (1000 ms = 1 second). 0 to ${MAX_DELAY_MS}.`}>Retry delay (ms)</div>
           <input
             value={retryDelayMs}
             onChange={(e) => setRetryDelayMs(e.target.value)}
@@ -279,7 +282,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
           />
         </div>
         <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
-          How long to wait between retry attempts on a string that failed to translate, during batch runs.
+          How long to wait between retry attempts on a string that failed to translate, during batch runs (0 to {MAX_DELAY_MS} ms; Stop ends the wait at once).
         </p>
 
         {providerId === "google-translate" && (
@@ -294,7 +297,7 @@ export default function ProjectSettings({ project, onProjectUpdated, onClose }: 
               />
             </div>
             <p style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginTop: "-0.5rem" }}>
-              Pause before every request sent to the Google Translate workaround, so it isn't hit too quickly.
+              Pause before every request sent to the Google Translate workaround, so it isn't hit too quickly (0 to {MAX_DELAY_MS} ms; Stop ends the wait at once).
             </p>
           </>
         )}

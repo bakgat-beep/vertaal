@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { TRANSLATION_PROVIDERS } from "./providers";
-import { testProviderConnection, type ProviderTestResult } from "./providerTest";
+import { testProviderConnection, makeProviderTestRunner, type ProviderTestResult } from "./providerTest";
 import type { ProviderConfig } from "./providers/types";
 import { Icon } from "./Icon";
 
@@ -28,28 +28,32 @@ export default function ProviderTestButton({
 }: Props) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<ProviderTestResult | null>(null);
-  const runId = useRef(0);
+  const [runner] = useState(makeProviderTestRunner);
 
   useEffect(() => {
-    runId.current++; // an in-flight test is now out of date
+    runner.cancel(); // an in-flight test is now out of date: stop its request, not just its answer
     setResult(null);
     setTesting(false);
-  }, [settingsFingerprint, providerId]);
+  }, [settingsFingerprint, providerId, runner]);
+
+  // Leaving the screen stops a test that is still running.
+  useEffect(() => () => runner.cancel(), [runner]);
 
   const provider = TRANSLATION_PROVIDERS[providerId];
   if (!provider) return null;
 
   async function runTest() {
-    const thisRun = ++runId.current;
     setTesting(true);
     setResult(null);
-    let outcome: ProviderTestResult;
-    try {
-      outcome = await testProviderConnection(provider, await getConfig(), sourceLanguage, targetLanguage);
-    } catch (err) {
-      outcome = { ok: false, message: "The test couldn't be run.", detail: String(err) };
-    }
-    if (runId.current !== thisRun) return; // settings changed while testing
+    const outcome = await runner.run(async (signal) => {
+      try {
+        const config = await getConfig();
+        return await testProviderConnection(provider, config, sourceLanguage, targetLanguage, { signal });
+      } catch (err) {
+        return { ok: false, message: "The test couldn't be run.", detail: String(err) };
+      }
+    });
+    if (outcome === null) return; // settings changed (or the screen closed) while testing: that test was stopped
     setResult(outcome);
     setTesting(false);
   }

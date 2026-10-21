@@ -20,36 +20,61 @@ export interface ProviderTestResult {
 const TEST_TEXT = "Hello";
 
 const TIMED_OUT = "__TEST_TIMED_OUT__";
+const CANCELLED = "__TEST_CANCELLED__";
 
+const CANCELLED_RESULT: ProviderTestResult = { ok: false, message: "The test was cancelled." };
+
+// Runs the test. The request is ALWAYS given its own "abort" signal, and that
+// signal is fired when the test times out or when the caller's `options.signal`
+// fires (for example because the settings on screen changed). Firing it makes
+// the network request itself stop — not just the screen stop waiting for it.
 export async function testProviderConnection(
   provider: TranslationProvider,
   config: ProviderConfig,
   sourceLanguage: string,
   targetLanguage: string,
-  options: { timeoutMs?: number } = {}
+  options: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<ProviderTestResult> {
   if (provider.requiresModel && !config.model?.trim()) {
     return { ok: false, message: `${provider.displayName} needs a model name — enter one first.` };
   }
+  const outsideSignal = options.signal;
+  if (outsideSignal?.aborted) return CANCELLED_RESULT;
 
   // A local model can take a while to load the first time it is used; online
   // services should answer quickly.
   const timeoutMs = options.timeoutMs ?? (provider.isLocal ? 90_000 : 20_000);
   const started = Date.now();
+  const requestController = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onOutsideAbort: (() => void) | undefined;
 
   try {
+    const interruption = new Promise<never>((_, reject) => {
+      // Reject FIRST, then abort: the first rejection is the one that counts,
+      // so the reason shown is the real one (not the abort it causes).
+      timer = setTimeout(() => {
+        reject(new Error(TIMED_OUT));
+        requestController.abort();
+      }, timeoutMs);
+      onOutsideAbort = () => {
+        reject(new Error(CANCELLED));
+        requestController.abort();
+      };
+      outsideSignal?.addEventListener("abort", onOutsideAbort);
+    });
+    interruption.catch(() => {}); // never an unhandled rejection if the request wins
+
     const result = await Promise.race([
-      provider.translate({ text: TEST_TEXT, sourceLanguage, targetLanguage }, config),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(TIMED_OUT)), timeoutMs);
-      }),
+      provider.translate({ text: TEST_TEXT, sourceLanguage, targetLanguage }, { ...config, signal: requestController.signal }),
+      interruption,
     ]);
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
     const shown = result.translatedText.trim().slice(0, 60);
     return { ok: true, message: `Connected. "${TEST_TEXT}" came back as "${shown}" (${seconds} s).` };
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
+    if (raw === CANCELLED) return CANCELLED_RESULT;
     return {
       ok: false,
       message: explainProviderError(provider.id, raw, { timeoutSeconds: Math.round(timeoutMs / 1000) }),
@@ -57,7 +82,34 @@ export async function testProviderConnection(
     };
   } finally {
     if (timer) clearTimeout(timer);
+    if (onOutsideAbort) outsideSignal?.removeEventListener("abort", onOutsideAbort);
   }
+}
+
+// Keeps track of the ONE test that is allowed to be running on a screen.
+// Starting a new test, or calling cancel() (the settings changed, the screen
+// closed), aborts the earlier test's request — so an old test can never keep
+// running in the background, or show its answer, after it stopped being
+// relevant. run() gives back null for a test that was replaced or cancelled.
+export function makeProviderTestRunner() {
+  let current: AbortController | null = null;
+  return {
+    async run(start: (signal: AbortSignal) => Promise<ProviderTestResult>): Promise<ProviderTestResult | null> {
+      current?.abort();
+      const mine = new AbortController();
+      current = mine;
+      try {
+        const result = await start(mine.signal);
+        return mine.signal.aborted ? null : result;
+      } finally {
+        if (current === mine) current = null;
+      }
+    },
+    cancel() {
+      current?.abort();
+      current = null;
+    },
+  };
 }
 
 // Turns what a provider threw into a sentence a non-programmer can act on.

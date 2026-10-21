@@ -2,6 +2,7 @@ import { copyFile, exists, mkdir, readDir, remove } from "@tauri-apps/plugin-fs"
 import { appConfigDir, appDataDir, join } from "@tauri-apps/api/path";
 import Database from "@tauri-apps/plugin-sql";
 import { getDb } from "./db";
+import { BackupRejectedError, NOT_A_BACKUP_MESSAGE, assertVertaalDatabase } from "./backupValidation";
 
 // Where things live. The database (and the scratch/staging files below) sit in
 // the app's config folder — that is where the database plugin puts vertaal.db.
@@ -95,28 +96,36 @@ export async function backupDatabase(destPath?: string): Promise<string> {
   return backupPath;
 }
 
-// Checks that a file really is a healthy Vertaal database. Only ever looks at
-// a COPY (already placed at the scratch file), never at the user's original —
-// opening a database can modify the file it opens.
+// Checks that an open scratch database really is a healthy Vertaal database
+// THIS version of Vertaal can open (right tables and columns, and an update
+// history this version recognises — see backupValidation.ts). Only ever looks
+// at a COPY (already placed at the scratch file), never at the user's original
+// — opening a database can modify the file it opens.
 async function assertLooksLikeVertaalDatabase() {
-  const notABackup = "That file is not a valid Vertaal backup, so nothing was changed.";
   let scratch;
   try {
     scratch = await openScratch(WORK_FILENAME);
-    const tables = (await scratch.select("SELECT name FROM sqlite_master WHERE type = 'table'")) as { name: string }[];
-    const names = new Set(tables.map((t) => t.name));
-    for (const required of ["projects", "strings", "translations"]) {
-      if (!names.has(required)) throw new Error(notABackup);
-    }
-    const check = (await scratch.select("PRAGMA integrity_check")) as { integrity_check: string }[];
-    if (check[0]?.integrity_check !== "ok") {
-      throw new Error("That backup file is damaged (it failed its integrity check), so nothing was changed.");
-    }
+    await assertVertaalDatabase(scratch);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("so nothing was changed")) throw err;
-    throw new Error(notABackup);
+    if (err instanceof BackupRejectedError) throw err;
+    // The file could not even be opened or read as a database.
+    throw new BackupRejectedError({ code: "not-vertaal", message: NOT_A_BACKUP_MESSAGE });
   } finally {
     await scratch?.close().catch(() => {});
+  }
+}
+
+// Checks the file at filePath by looking at a throwaway COPY of it. Throws a
+// BackupRejectedError if the file must not be used. Any other error means the
+// check itself could not be carried out (for example the copy failed).
+async function checkFileIsVertaalBackup(filePath: string) {
+  const workPath = await configPath(WORK_FILENAME);
+  try {
+    await removeDbFiles(workPath);
+    await copyFile(filePath, workPath);
+    await assertLooksLikeVertaalDatabase();
+  } finally {
+    await removeDbFiles(workPath).catch(() => {});
   }
 }
 
@@ -129,17 +138,10 @@ async function assertLooksLikeVertaalDatabase() {
 // The next time Vertaal starts, applyPendingRestore() puts it in place before
 // the database is opened. Returns the safety backup's location.
 export async function restoreDatabase(sourcePath: string): Promise<string> {
-  const workPath = await configPath(WORK_FILENAME);
   const pendingPath = await configPath(PENDING_FILENAME);
 
   // 1. Check a copy of the file (the copy is thrown away afterwards).
-  try {
-    await removeDbFiles(workPath);
-    await copyFile(sourcePath, workPath);
-    await assertLooksLikeVertaalDatabase();
-  } finally {
-    await removeDbFiles(workPath).catch(() => {});
-  }
+  await checkFileIsVertaalBackup(sourcePath);
 
   // Put the checked copy aside as the pending restore. (Re-copy from the
   // original: the checked copy was opened, which may have changed it.)
@@ -162,16 +164,34 @@ export async function restoreDatabase(sourcePath: string): Promise<string> {
   return safetyPath;
 }
 
-export type PendingRestoreResult = { status: "none" } | { status: "applied" } | { status: "failed"; message: string };
+export type PendingRestoreResult =
+  | { status: "none" }
+  | { status: "applied" }
+  | { status: "failed"; message: string } // could not finish; the file is kept and tried again next launch
+  | { status: "rejected"; message: string }; // the waiting file failed its check and was discarded
 
 // Runs at the very start of every launch, BEFORE anything opens the database.
-// If a restore is waiting, the backup is copied over the database now (nothing
-// has the file open yet), the old database's leftover -wal/-shm files are
-// removed, and the pending file is deleted. If anything goes wrong the pending
-// file stays, so the next launch simply tries again.
+// If a restore is waiting, the waiting file is checked once more (it has been
+// sitting on disk since it was prepared), then the backup is copied over the
+// database (nothing has the file open yet), the old database's leftover
+// -wal/-shm files are removed, and the pending file is deleted.
+//   - If the file fails its check it can never become valid, so it is thrown
+//     away and the current database is left alone ("rejected").
+//   - If something else goes wrong the pending file stays, so the next launch
+//     simply tries again ("failed").
 export async function applyPendingRestore(): Promise<PendingRestoreResult> {
   const pendingPath = await configPath(PENDING_FILENAME);
   if (!(await exists(pendingPath))) return { status: "none" };
+
+  try {
+    await checkFileIsVertaalBackup(pendingPath);
+  } catch (err) {
+    if (err instanceof BackupRejectedError) {
+      await removeDbFiles(pendingPath).catch(() => {});
+      return { status: "rejected", message: err.message };
+    }
+    return { status: "failed", message: String(err) };
+  }
 
   const livePath = await configPath(DB_FILENAME);
   try {

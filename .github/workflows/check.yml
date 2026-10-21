@@ -3,11 +3,16 @@ name: Check
 # Runs on every push to main and on every pull request: type-check, run all the
 # tests, and look for known security problems in the packages the app ships with.
 # It never builds an installer or publishes anything (that is release.yml).
+#
+# release.yml also CALLS this workflow (the "workflow_call" trigger below), so a
+# release is only built after these very same checks pass on the exact commit
+# that was tagged. Change the checks here and both places get the change.
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
