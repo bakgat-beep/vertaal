@@ -54,16 +54,23 @@ If you'd rather build it yourself, or want to help develop it:
 1. Install [Node.js](https://nodejs.org/) (LTS) and the [Rust toolchain](https://www.rust-lang.org/tools/install)
 2. Install the [Tauri prerequisites for Windows](https://tauri.app/start/prerequisites/) (mainly the WebView2 runtime and the Visual Studio C++ Build Tools — most Windows 10/11 machines already have WebView2)
 3. Clone the repo:
-  -   git clone https://github.com/bakgat-beep/vertaal.git
-  -   cd vertaal
+```
+   git clone https://github.com/bakgat-beep/vertaal.git
+   cd vertaal
+```
 4. Install dependencies and run it:
-  -   npm install
-  -   npm run tauri dev
+```
+   npm install
+   npm run tauri dev
+```
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for more on the codebase itself.
 
 ## Building a distributable app
 
+```
 npm run tauri build
+```
 
 The installer will be in `src-tauri/target/release/bundle/`.
 

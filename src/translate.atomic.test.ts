@@ -71,6 +71,17 @@ const fakeDb = {
     }
     if (q.includes("SET flagged = 1")) {
       flagCalls++;
+      // params: [key, game, language, who]. The real statement refuses to flag
+      // a row that holds a person's own work (its WHERE part); the stand-in
+      // applies that rule only when the statement really contains it.
+      const [key, gameId, lang] = p;
+      const existing = find(key, gameId, lang);
+      const guarded = q.includes("NOT IN ('human-confirmed', 'human-draft')");
+      if (!existing) {
+        rows.push({ string_key: key, game_id: gameId, target_language: lang, translated_text: "", status: "untranslated", flagged: 1 });
+      } else if (!guarded || (existing.status !== "human-confirmed" && existing.status !== "human-draft")) {
+        existing.flagged = 1;
+      }
       return { rowsAffected: 1 };
     }
     if (q.includes("INSERT INTO translation_history")) {
@@ -199,5 +210,46 @@ describe("an empty reply is a failed attempt, never saved", () => {
     expect(r.ok).toBe(false);
     expect(r.attempts).toBe(3);
     expect(flagCalls).toBe(1);
+  });
+});
+
+
+describe("a failed AI attempt never flags a person's own work", () => {
+  const sourceWithCode = "Hello $NAME$"; // the reply below drops the code, so the attempt fails
+
+  it("a confirmed string stays unflagged (a flag would hold it back from the exported mod)", async () => {
+    seed("human-confirmed", "Mens-teks");
+    const r = await translateAndSave(project, "K", "eu5", sourceWithCode);
+    expect(r.ok).toBe(false);
+    expect(rows[0].flagged).toBe(0);
+    expect(rows[0].translated_text).toBe("Mens-teks");
+  });
+
+  it("a string you typed yourself (a draft) stays unflagged too", async () => {
+    seed("human-draft", "My eie konsep");
+    await translateAndSave(project, "K", "eu5", sourceWithCode);
+    expect(rows[0].flagged).toBe(0);
+  });
+
+  it("after three failed tries a confirmed string is still not flagged", async () => {
+    seed("human-confirmed", "Mens-teks");
+    reply.text = ""; // an empty reply fails every try
+    const failed = await translateWithRetry(project, "K", "eu5", "Hello", () => false, undefined, 3, 0, false, false);
+    expect(failed.ok).toBe(false);
+    expect(failed.attempts).toBe(3);
+    expect(rows[0].flagged).toBe(0);
+    expect(rows[0].status).toBe("human-confirmed");
+  });
+
+  it("an untranslated or AI-draft string IS flagged, as before", async () => {
+    seed("ai-suggested", "ou AI");
+    await translateAndSave(project, "K", "eu5", sourceWithCode);
+    expect(rows[0].flagged).toBe(1);
+  });
+
+  it("a string with no row yet gets a flagged, empty row as before", async () => {
+    await translateAndSave(project, "K", "eu5", sourceWithCode);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ flagged: 1, status: "untranslated", translated_text: "" });
   });
 });

@@ -174,15 +174,17 @@ export async function exportMod(currentProject: Project, onStatus: (msg: string)
       byFile[relPath].push({ key: row.key, translated_text: row.translated_text });
     }
 
-    // Remove any loc file the LAST export wrote that this run is not writing
-    // again — otherwise a string that got unflagged, unconfirmed, or
-    // reverted could leave its old (and now wrong) file untouched forever.
     const previousManifest = await readExportManifest(modRoot);
     const currentRelPaths = Object.keys(byFile);
-    await removeStaleFiles(modRoot, computeStaleRelPaths(previousManifest, currentRelPaths));
 
     onStatus(`Writing ${currentRelPaths.length} localization files...`);
     await writeModLocFiles(modRoot, languageCode, byFile);
+    // Only AFTER the new files are safely written: remove any loc file the LAST
+    // export wrote that this run did not write again (otherwise a string that
+    // got unflagged, unconfirmed or reverted could leave its old, now wrong,
+    // file in the mod forever). Doing this first meant a write that failed
+    // part-way left the mod with the old files already deleted.
+    await removeStaleFiles(modRoot, computeStaleRelPaths(previousManifest, currentRelPaths));
     await writeExportManifest(modRoot, currentRelPaths);
 
     await mkdir(await join(modRoot, ".metadata"), { recursive: true });
@@ -276,10 +278,11 @@ export async function exportModCompanion(
 
     const previousManifest = await readExportManifest(modRoot);
     const currentRelPaths = Object.keys(byFile);
-    await removeStaleFiles(modRoot, computeStaleRelPaths(previousManifest, currentRelPaths));
 
     onStatus(`Writing ${currentRelPaths.length} localization files...`);
     await writeModLocFiles(modRoot, languageCode, byFile);
+    // Stale files are removed only after the new ones are written (see exportMod).
+    await removeStaleFiles(modRoot, computeStaleRelPaths(previousManifest, currentRelPaths));
     await writeExportManifest(modRoot, currentRelPaths);
 
     await mkdir(await join(modRoot, ".metadata"), { recursive: true });

@@ -21,6 +21,7 @@ import { getContributorName, setContributorName } from "./settings";
 import { backupDatabase } from "./backup";
 import { exportPortableProjectData } from "./portableExport";
 import { importPortableProjectData } from "./mergeImport";
+import { describeMerge } from "./mergeMessage";
 import GlossaryManager from "./GlossaryManager";
 import ConfirmNamesPanel from "./ConfirmNamesPanel";
 import SourceDiff from "./SourceDiff";
@@ -108,6 +109,7 @@ function App() {
     confirmRow,
     toggleFlag,
     flushWrites,
+    hasUnsavedDrafts,
   } = useEditorRows({
     currentProject,
     contributorName: contributorName ?? null, // "still loading" treated as "not yet known" here; the app shows nothing else until it resolves
@@ -138,6 +140,7 @@ function App() {
     loadPage,
     refreshCounts,
     setStatus,
+    hasUnsavedEdits: hasUnsavedDrafts,
   });
 
   const [showWelcome, setShowWelcome] = useState(true);
@@ -349,14 +352,7 @@ function App() {
     setStatus("Importing project data...");
     try {
       const summary = await importPortableProjectData(currentProject, filePath as string);
-      setStatus(
-        `Import complete: ${summary.applied} applied, ${summary.skippedLocalNewer} skipped (your version was newer), ` +
-          `${summary.skippedKeptYourWork} skipped (an AI draft would have replaced your own work), ` +
-          `${summary.skippedNoLocalString} skipped (string not found locally), ${summary.glossaryAdded} glossary term(s) added, ${summary.glossaryUpdated} updated.` +
-          (summary.flaggedForGameCodes > 0
-            ? ` ${summary.flaggedForGameCodes} confirmed translation(s) had game codes that don't match the original, so they were saved as flagged drafts - see Flagged.`
-            : "")
-      );
+      setStatus(`Import complete: ${describeMerge(summary)}`);
       await refreshCounts();
       await loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
     } catch (err) {

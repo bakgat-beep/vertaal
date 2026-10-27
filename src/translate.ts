@@ -70,7 +70,10 @@ function sleep(ms: number, signal?: AbortSignal): Promise<boolean> {
 }
 
 // Marks a string as "needs a human look" after an AI attempt failed — WITHOUT
-// touching any translation the string already has. (Previously a failed AI
+// touching any translation the string already has. A string that holds a
+// person's own work (confirmed or typed) is not flagged at all: the failed
+// attempt says nothing about THAT text, and a flag would quietly hold a
+// confirmed string back from the exported mod. (Previously a failed AI
 // attempt overwrote the row with empty text and an "untranslated" status,
 // which silently wiped an existing confirmed translation or draft.) If the
 // string has no translation row yet, one is created empty and flagged.
@@ -84,7 +87,8 @@ async function flagForReview(
   await db.execute(
     `INSERT INTO translations (string_key, game_id, target_language, translated_text, status, translated_by, updated_at, flagged)
      VALUES ($1, $2, $3, '', 'untranslated', $4, datetime('now'), 1)
-     ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET flagged = 1`,
+     ON CONFLICT(string_key, game_id, target_language) DO UPDATE SET flagged = 1
+     WHERE translations.status NOT IN ('human-confirmed', 'human-draft')`,
     [key, gameId, targetLanguage, attribution]
   );
 }

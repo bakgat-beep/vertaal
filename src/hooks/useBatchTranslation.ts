@@ -18,6 +18,10 @@ interface UseBatchTranslationParams {
   loadPage: (mode: ViewMode, newOffset: number, category?: string, subcategory?: string) => Promise<void>;
   refreshCounts: () => Promise<void>;
   setStatus: (status: string) => void;
+  // True while a text box on the screen holds typing that has not been saved
+  // yet. A batch that finishes then leaves the list alone rather than
+  // redrawing it over that typing.
+  hasUnsavedEdits?: () => boolean;
 }
 
 // Holds batchRunning/batchProgress/overnightCount plus the four bulk AI
@@ -34,6 +38,7 @@ export function useBatchTranslation({
   loadPage,
   refreshCounts,
   setStatus,
+  hasUnsavedEdits,
 }: UseBatchTranslationParams) {
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
@@ -70,8 +75,53 @@ export function useBatchTranslation({
     return `Stopped: ${error ?? "the translation service refused the request"}. Nothing was changed on the strings - fix this in Project Settings, then run again.`;
   }
 
-  function reloadCurrentPage() {
-    return loadPage(viewMode, offset, categoryFilter ?? undefined, subcategoryFilter ?? undefined);
+  // What is on screen RIGHT NOW. A batch can run for hours, and the functions
+  // below were created when it started, so they would otherwise remember the
+  // page that was showing back then. This always holds the newest values.
+  const latestRef = useRef({ viewMode, offset, categoryFilter, subcategoryFilter, loadPage, hasUnsavedEdits });
+  latestRef.current = { viewMode, offset, categoryFilter, subcategoryFilter, loadPage, hasUnsavedEdits };
+
+  function currentViewKey() {
+    const v = latestRef.current;
+    return `${v.viewMode}|${v.offset}|${v.categoryFilter ?? ""}|${v.subcategoryFilter ?? ""}`;
+  }
+
+  // Redraws the list after a batch so the new drafts show - but only when that
+  // is safe. If you moved to another page or view while the batch ran, or have
+  // typing that is not saved yet, the list is left alone (redrawing would throw
+  // you back to where the batch started, or wipe what you typed). Returns a
+  // sentence to add to the final message when the list was not redrawn.
+  async function refreshAfterBatch(startedAtView: string): Promise<string> {
+    const v = latestRef.current;
+    if (currentViewKey() !== startedAtView) {
+      return " The list on screen was not refreshed because you moved to another page - open the page again to see the new results.";
+    }
+    if (v.hasUnsavedEdits?.()) {
+      return " The list on screen was not refreshed because you have typing that is not saved yet - click out of the box, then open the page again to see the new results.";
+    }
+    await v.loadPage(v.viewMode, v.offset, v.categoryFilter ?? undefined, v.subcategoryFilter ?? undefined);
+    return "";
+  }
+
+  // Makes the safety backup that comes before a big run. If it fails, the
+  // person decides: carrying on without a backup must be a choice, not
+  // something that happens while a warning flashes past unread. Returns false
+  // when the run should not go ahead.
+  async function backupBeforeRun(): Promise<boolean> {
+    setStatus("Backing up database before starting...");
+    try {
+      await backupDatabase();
+      return true;
+    } catch (err) {
+      const carryOn = await confirm(
+        `The safety backup could not be made (${err instanceof Error ? err.message : err}).\n\n` +
+          "Carry on WITHOUT a backup? If you are unsure, choose Cancel and make a backup yourself first " +
+          "(Welcome screen, Backup now).",
+        { confirmLabel: "Carry on without a backup", cancelLabel: "Cancel" }
+      );
+      if (!carryOn) setStatus("Cancelled - the backup failed, so nothing was changed.");
+      return carryOn;
+    }
   }
 
   async function batchTranslatePage() {
@@ -89,6 +139,7 @@ export function useBatchTranslation({
     if (!claimBatchSlot()) return;
     setBatchRunning(true);
     const signal = beginRun();
+    const startedAtView = currentViewKey();
     setBatchProgress({ done: 0, total: targets.length });
 
     // Wrapped so an unexpected error (not a handled per-string failure —
@@ -107,7 +158,7 @@ export function useBatchTranslation({
       let skipped = 0;
       let lastError = "";
       let consecutiveFailures = 0;
-      let stoppedEarly = false; // a message explaining why has already been shown
+      let stoppedMessage = ""; // why the run ended early, shown once the list has been redrawn
 
       for (let i = 0; i < targets.length; i++) {
         if (stopRequestedRef.current) break;
@@ -136,24 +187,26 @@ export function useBatchTranslation({
         } else {
           lastError = result.error ?? "unknown error";
           if (result.permanent) {
-            setStatus(permanentProblemMessage(result.error));
-            stoppedEarly = true;
+            stoppedMessage = permanentProblemMessage(result.error);
             break;
           }
           if (++consecutiveFailures >= 3) {
-            setStatus(`Stopped: 3 strings in a row failed. Last error: ${lastError}`);
-            stoppedEarly = true;
+            stoppedMessage = `Stopped: 3 strings in a row failed. Last error: ${lastError}`;
             break;
           }
         }
         setBatchProgress({ done: i + 1, total: targets.length });
       }
 
-      await reloadCurrentPage();
-      if (!stoppedEarly) setStatus(
-        succeeded + skipped === targets.length
-          ? `Page batch complete. ${succeeded} translated${skipped ? `, ${skipped} left alone because you had already confirmed or typed them` : ""}.`
-          : `Page batch finished: ${succeeded}/${targets.length} translated${skipped ? `, ${skipped} left alone (already confirmed or typed)` : ""}. Last error: ${lastError}`
+      // The list is redrawn first, and the final message set AFTER it: redrawing
+      // writes its own "Showing strings..." message, which used to wipe out the
+      // reason a run had stopped.
+      const note = await refreshAfterBatch(startedAtView);
+      setStatus(
+        (stoppedMessage ||
+          (succeeded + skipped === targets.length
+            ? `Page batch complete. ${succeeded} translated${skipped ? `, ${skipped} left alone because you had already confirmed or typed them` : ""}.`
+            : `Page batch finished: ${succeeded}/${targets.length} translated${skipped ? `, ${skipped} left alone (already confirmed or typed)` : ""}. Last error: ${lastError}`)) + note
       );
     } catch (err) {
       setStatus(`Page batch stopped unexpectedly: ${err}`);
@@ -177,6 +230,7 @@ export function useBatchTranslation({
   ) {
     if (!currentProject) return;
     if (!claimBatchSlot()) return;
+    const startedAtView = currentViewKey();
     try {
       const db = await getDb();
       const gameId = currentProject.game_id;
@@ -227,8 +281,8 @@ export function useBatchTranslation({
       }
 
       refreshCounts();
-      await reloadCurrentPage();
-      setStatus(`Confirmed ${matches.length} strings as they are.`);
+      const note = await refreshAfterBatch(startedAtView);
+      setStatus(`Confirmed ${matches.length} strings as they are.${note}`);
     } catch (err) {
       setStatus(`Confirming ${label} failed: ${err instanceof Error ? err.message : err}`);
       refreshCounts();
@@ -267,15 +321,15 @@ export function useBatchTranslation({
     // when the run began.)
     setBatchRunning(true);
     const signal = beginRun();
+    const startedAtView = currentViewKey();
     setBatchProgress({ done: 0, total: targetCount });
     let done = 0;
 
     try {
-      setStatus("Backing up database before starting...");
-      try {
-        await backupDatabase();
-      } catch (err) {
-        setStatus(`Warning: backup failed (${err}). Continuing anyway.`);
+      if (!(await backupBeforeRun())) return; // cancelled; "finally" below frees the buttons
+      if (stopRequestedRef.current) {
+        setStatus("Stopped before the run began.");
+        return; // Stop was pressed while the backup ran
       }
 
       // Inside the try, so a database that cannot be opened ends the run with a
@@ -380,8 +434,8 @@ export function useBatchTranslation({
         if (queue.length < 10) await refillQueue();
       }
 
-      await reloadCurrentPage();
-      setStatus(stoppedMessage ? `${stoppedMessage} (${done} translated before that.)` : `Overnight batch finished. ${done} strings translated.`);
+      const note = await refreshAfterBatch(startedAtView);
+      setStatus((stoppedMessage ? `${stoppedMessage} (${done} translated before that.)` : `Overnight batch finished. ${done} strings translated.`) + note);
     } catch (err) {
       setStatus(`Overnight batch stopped unexpectedly after ${done} translated: ${err}`);
     } finally {
@@ -396,6 +450,7 @@ export function useBatchTranslation({
     if (!claimBatchSlot()) return;
     setBatchRunning(true);
     const signal = beginRun();
+    const startedAtView = currentViewKey();
     let done = 0;
 
     try {
@@ -425,11 +480,10 @@ export function useBatchTranslation({
         setStatus("Re-run cancelled.");
         return;
       }
-      setStatus("Backing up database before starting...");
-      try {
-        await backupDatabase();
-      } catch (err) {
-        setStatus(`Warning: backup failed (${err}). Continuing anyway.`);
+      if (!(await backupBeforeRun())) return; // cancelled; "finally" below frees the buttons
+      if (stopRequestedRef.current) {
+        setStatus("Stopped before the run began.");
+        return; // Stop was pressed while the backup ran
       }
 
       setBatchProgress({ done: 0, total: targets.length });
@@ -473,8 +527,8 @@ export function useBatchTranslation({
         }
       }
 
-      await reloadCurrentPage();
-      setStatus(stoppedMessage ? `${stoppedMessage} (${done} re-translated before that.)` : `Re-run complete. ${done} strings re-translated.`);
+      const note = await refreshAfterBatch(startedAtView);
+      setStatus((stoppedMessage ? `${stoppedMessage} (${done} re-translated before that.)` : `Re-run complete. ${done} strings re-translated.`) + note);
     } catch (err) {
       setStatus(`Re-run stopped unexpectedly after ${done} translated: ${err}`);
     } finally {

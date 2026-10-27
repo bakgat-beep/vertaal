@@ -24,7 +24,7 @@ Vertaal is Windows-only by design (it writes Paradox game/mod files using Window
 
 ### Running the test suite
 
-Vertaal has an automated test suite (using [Vitest](https://vitest.dev/)) of more than 450 tests across about 45 files. It covers the token-protection logic in `src/parser.ts` (the part most likely to silently break game syntax if a change goes wrong), every translation provider, the game adapters, import/export, backup and merge, glossary and search behaviour, and many smaller helpers. Test files sit next to the code they test and are named `something.test.ts`.
+Vertaal has an automated test suite (using [Vitest](https://vitest.dev/)) of several hundred tests in dozens of files (run `npm test` to see the current numbers). It covers the token-protection logic in `src/parser.ts` (the part most likely to silently break game syntax if a change goes wrong), every translation provider, the game adapters, import/export, backup and merge, glossary and search behaviour, and many smaller helpers. Test files sit next to the code they test and are named `something.test.ts`.
 
 - `npm test` — runs the test suite
 - `npx tsc --noEmit` — type-checks the whole project without building it (catches a wide class of mistakes before you even run the app)

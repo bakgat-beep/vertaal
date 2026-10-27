@@ -13,7 +13,9 @@ You choose a provider per-project, in Project Settings (or when creating a new p
 **Setup:**
 1. Install [Ollama](https://ollama.com/download) for Windows
 2. Open a terminal and run:
-  - ollama pull translategemma
+```
+   ollama pull translategemma
+```
    (or whichever TranslateGemma variant/size you prefer — check the [Ollama model library](https://ollama.com/library) for available sizes; larger models are slower but generally better quality)
 3. Make sure Ollama is running (it usually starts automatically and sits in the system tray)
 4. In Vertaal, create or open a project, set the provider to "TranslateGemma (local, via Ollama)" — Vertaal will detect any installed models automatically. Only models whose name starts with `translategemma` are offered, because the prompt Vertaal sends is written for that model family.

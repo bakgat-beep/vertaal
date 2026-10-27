@@ -459,6 +459,13 @@ export function useEditorRows({
     });
   }
 
+  // True when a text box on screen holds typing that has not been saved yet
+  // (what is in the box differs from what is stored). Used so a batch that
+  // finishes does not redraw the list over that typing.
+  function hasUnsavedDrafts(): boolean {
+    return rowsRef.current.some((r) => (draftsRef.current[r.key] ?? r.translated_text ?? "") !== (r.translated_text ?? ""));
+  }
+
   // Resolves once every queued save/confirm/flag has finished. Bulk actions
   // that read the database themselves call this first.
   function flushWrites() {
@@ -487,5 +494,6 @@ export function useEditorRows({
     confirmRow,
     toggleFlag,
     flushWrites,
+    hasUnsavedDrafts,
   };
 }

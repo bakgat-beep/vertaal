@@ -6,6 +6,7 @@ import { checkGitAvailable, initRepo, cloneRepo, setRemote, checkRemoteUrl, comm
 import { getContributorName, getGithubToken, setGithubToken } from "./settings";
 import { exportPortableProjectData } from "./portableExport";
 import { importAllContributorFiles, type CombinedMergeSummary } from "./mergeImport";
+import { describeMerge } from "./mergeMessage";
 import { getDb } from "./db";
 import { portableExportFileName } from "./fileNames";
 import { useEscapeKey } from "./hooks/useEscapeKey";
@@ -49,17 +50,7 @@ export default function CollaborationPanel({ project, onProjectUpdated, onDataCh
 
   function summaryLine(summary: CombinedMergeSummary): string {
     if (summary.filesProcessed.length === 0) return "No collaborator files found to merge yet.";
-    return (
-      `Merged ${summary.filesProcessed.length} file(s) (${summary.filesProcessed.join(", ")}): ` +
-      `${summary.applied} translation(s) applied, ${summary.skippedLocalNewer} skipped (your local version was newer), ` +
-      `${summary.skippedKeptYourWork} skipped (an AI draft would have replaced your own work), ` +
-      `${summary.skippedNoLocalString} skipped (string not found locally), ` +
-      `${summary.glossaryAdded} glossary term(s) added, ${summary.glossaryUpdated} updated.` +
-      (summary.flaggedForGameCodes > 0
-        ? ` ${summary.flaggedForGameCodes} confirmed translation(s) had game codes that don't match the original, ` +
-          "so they were saved as flagged drafts - see Flagged."
-        : "")
-    );
+    return `Merged ${summary.filesProcessed.length} file(s) (${summary.filesProcessed.join(", ")}): ${describeMerge(summary)}`;
   }
 
   async function saveProjectField(field: "git_repo_path" | "git_remote_url", value: string) {

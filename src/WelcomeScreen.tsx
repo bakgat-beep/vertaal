@@ -7,6 +7,8 @@ import type { Project } from "./types";
 import { GAME_ADAPTERS } from "./games";
 import { backupDatabase, restoreDatabase } from "./backup";
 import { importPortableProjectData } from "./mergeImport";
+import { describeMerge } from "./mergeMessage";
+import { confirm } from "./confirm";
 import NewProjectWizard from "./NewProjectWizard";
 import logoFull from "./assets/logo-full-white.png";
 import { Icon } from "./Icon";
@@ -131,11 +133,12 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
   async function handleRestoreNow() {
     const filePath = await open({ multiple: false, filters: [{ name: "Vertaal backup", extensions: ["db"] }] });
     if (!filePath) return;
-    const proceed = window.confirm(
+    const proceed = await confirm(
       "This will REPLACE your entire Vertaal database (every project, every game) with the selected backup file. " +
         "Your current database will automatically be saved first in case you need to undo this, and Vertaal will " +
         "need to close and be reopened to finish. Saved API keys and your GitHub token are not part of a backup, so " +
-        "you will need to enter them again afterwards. Continue?"
+        "you will need to enter them again afterwards. Continue?",
+      { confirmLabel: "Replace my database", destructive: true }
     );
     if (!proceed) return;
     setMaintenanceStatus("Restoring...");
@@ -161,10 +164,7 @@ export default function WelcomeScreen({ onProjectSelected, onOpenAppSettings }: 
     );
     try {
       const summary = await importPortableProjectData(project, filePath as string);
-      setImportStatus(
-        `Import complete: ${summary.applied} applied, ${summary.skippedLocalNewer} skipped (local was newer), ` +
-          `${summary.skippedNoLocalString} skipped (string not found locally), ${summary.glossaryAdded} glossary term(s) added, ${summary.glossaryUpdated} updated.`
-      );
+      setImportStatus(`Import complete: ${describeMerge(summary)}`);
       await loadRecentProjects();
     } catch (err) {
       setImportStatus(`Import failed: ${err}`);
