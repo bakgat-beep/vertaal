@@ -1,9 +1,9 @@
 [package]
 name = "pdx-afrikaans"
-version = "0.2.1"
+version = "0.2.2"
 description = "Vertaal: a translation tool for Paradox grand strategy game mods"
 authors = ["Vertaal contributors"]
-edition = "2021"
+edition = "2026"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
